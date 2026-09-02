@@ -1,3 +1,1 @@
-import axios from 'axios';
-
-export default axios;
+export { getVulnerabilities, getFilterOptions, triggerFetch, getAlerts, getVulnerabilityCount } from '../api';

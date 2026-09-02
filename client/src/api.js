@@ -1,4 +1,4 @@
-import axios from './services/api';
+import axios from 'axios';
 
 export async function getVulnerabilities(params = {}) {
     const response = await axios.get('/api/vulnerabilities', { params });
