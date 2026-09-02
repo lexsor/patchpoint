@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const repository = require('../../models/repository');
-const { fetchAllSources, getFetchStatus } = require('../../models/fetcher-orchestrator');
-const { getAlerts, getAlertCount, clearAlerts } = require('../../models/alert-engine');
+const repository = require('../models/repository');
+const { fetchAllSources, getFetchStatus } = require('../models/fetcher-orchestrator');
+const { getAlerts, getAlertCount, clearAlerts } = require('../models/alert-engine');
 
 // GET /api/vulnerabilities - List vulnerabilities with filters
 router.get('/vulnerabilities', async (req, res) => {
