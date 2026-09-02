@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getDb } = require('../../db/client');
+const { getDb } = require('../db/client');
 
 // GET /api/watchlist - Get all watchlist items
 router.get('/', async (req, res) => {

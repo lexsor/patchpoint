@@ -47,7 +47,7 @@ router.get('/vulnerabilities', async (req, res) => {
 // GET /api/vulnerabilities/:cveId - Get single vulnerability
 router.get('/vulnerabilities/:cveId', async (req, res) => {
     try {
-        const db = require('../../db/client').getDb();
+        const db = require('../db/client').getDb();
         const result = await db.query(
             'SELECT * FROM vulnerabilities WHERE cve_id = $1',
             [req.params.cveId.toUpperCase().replace(/\s/g, '')]
