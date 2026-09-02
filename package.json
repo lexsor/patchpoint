@@ -1,0 +1,18 @@
+{
+  "name": "vulnerability-dashboard",
+  "version": "1.0.0",
+  "description": "Vulnerability dashboard consolidating CVE data from CISA, NIST NVD, and MITRE",
+  "scripts": {
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "test": "cd server && npm test",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up",
+    "docker:down": "docker compose down",
+    "test:docker": "bash scripts/test-docker-build.sh"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
