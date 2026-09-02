@@ -2,19 +2,26 @@ const https = require('https');
 
 /**
  * Fetch MITRE CVEW (CVE Enhancement Workspace) data
- * https://cveawg.mitre.org/api/cve/
+ * https://cveawg.mitre.org/api/cve/{cveId}
  * Returns structured CVE data with tags, references, timelines
+ * 
+ * The MITRE CVEW API requires per-CVE requests. The fetcher receives
+ * an optional cveId filter — if provided, fetches that single CVE;
+ * otherwise returns empty (MITRE doesn't support bulk listing).
  */
 
-const MITRE_CVEW_URL = 'https://cveawg.mitre.org/api/cve/';
-
-async function fetchMitreCvew(page = 0, size = 2000) {
-    const params = new URLSearchParams({
-        cve_id: '', // empty = all CVEs
-    });
+/**
+ * Fetch a specific CVE from MITRE CVEW API
+ */
+async function fetchMitreCvew(cveId = '') {
+    if (!cveId) {
+        // MITRE doesn't support bulk listing — return placeholder
+        console.log('[MITRE CVEW] Skipping bulk fetch (API requires per-CVE requests)');
+        return { records: [], total: 0 };
+    }
     
-    const url = `${MITRE_CVEW_URL}?${params.toString()}&pageSize=${size}&startIndex=${page * size}`;
-    console.log(`[MITRE CVEW] Fetching page ${page}: ${url}`);
+    const url = `https://cveawg.mitre.org/api/cve/${cveId}`;
+    console.log(`[MITRE CVEW] Fetching: ${url}`);
 
     return new Promise((resolve, reject) => {
         const req = https.get(url, {
@@ -35,69 +42,123 @@ async function fetchMitreCvew(page = 0, size = 2000) {
                     const parsed = JSON.parse(data);
                     const results = [];
 
-                    // MITRE CVEW API returns { cve_Items: [...] }
-                    const items = parsed.cve_Items || parsed.items || parsed.results || [parsed];
-                    
-                    for (const item of items) {
-                        const cveData = item?.cve || item || {};
-                        const cveId = cveData.id || cveData.CVE_data_meta?.ID || '';
-                        
-                        // Extract description
+                    // MITRE API returns CPEng format:
+                    // { dataType: "CVE_RECORD", cveMetadata, containers: { cna: { ... } } }
+                    // or older format with cve_Items array
+                    const cveData = parsed;
+                    const resultsArr = [cveData];
+
+                    for (const item of resultsArr) {
+                        // Try CPEng format first
+                        const cveId = item?.cveMetadata?.cveId ||
+                                      item?.id ||
+                                      item?.CVE_data_meta?.ID || '';
+
+                        if (!cveId) continue;
+
+                        // CPEng: containers.cna.*  |  Old: item.*
+                        const cna = item?.containers?.cna || {};
+                        const oldFormat = item?.cve || item;
+
+                        // Description from CPEng or old format
                         let description = '';
-                        const descs = cveData.descriptions || cveData.description?.description_data || [];
-                        for (const d of descs) {
+                        const oldDescs = cna?.descriptions || oldFormat?.descriptions || oldFormat?.description?.description_data || [];
+                        for (const d of oldDescs) {
                             if (d.value && (d.lang === 'en' || !d.lang)) {
                                 description = d.value;
                                 break;
                             }
                         }
 
-                        // Extract CVSS
+                        // CVSS from CPEng (first container, cna metrics) or old format
                         let cvssScore = null;
                         let cvssVector = '';
-                        const metrics = cveData.metrics?.cvssMetricV31 || cveData.metrics?.cvssMetricV30 || [];
-                        const primary = metrics.find(m => m.cveDataTags?.includes('Primary')) || metrics[0];
-                        if (primary?.cvssData) {
-                            cvssScore = parseFloat(primary.cvssData.baseMetricScore) || null;
-                            cvssVector = primary.cvssData.vectorString || '';
+                        
+                        // CPEng format: containers.cna.metrics[].cvssV3_1 or cvssV4_0
+                        const cnaMetrics = cna?.metrics || [];
+                        for (const m of cnaMetrics) {
+                            const v4 = m?.cvssV4_0;
+                            const v31 = m?.cvssV3_1;
+                            const v30 = m?.cvssV3_0;
+                            const v20 = m?.cvssV2_0;
+                            const target = v4 || v31 || v30 || v20;
+                            if (target) {
+                                cvssScore = parseFloat(target?.baseScore);
+                                cvssVector = target?.vectorString || '';
+                                break;
+                            }
                         }
-
-                        // Extract references
-                        const refs = [];
-                        for (const ref of cveData.references || []) {
-                            if (ref.url) refs.push(ref.url);
-                        }
-
-                        // Extract CWEs
-                        const cwes = [];
-                        for (const wfn of cveData.weaknesses || []) {
-                            for (const desc of wfn.description || []) {
-                                const m = desc.value?.match(/CWE-\d+/);
-                                if (m) cwes.push(m[0]);
+                        
+                        // Fallback to old format metrics
+                        if (cvssScore == null) {
+                            const metrics = oldFormat?.metrics?.cvssMetricV31 || 
+                                          oldFormat?.metrics?.cvssMetricV30 || [];
+                            const primary = metrics.find(m => m.cveDataTags?.includes('Primary')) || metrics[0];
+                            if (primary?.cvssData) {
+                                cvssScore = parseFloat(primary.cvssData.baseMetricScore) || null;
+                                cvssVector = primary.cvssData.vectorString || '';
                             }
                         }
 
-                        // Extract timeline
+                        // Title from CPEng
+                        const title = cna?.title || oldFormat?.title || cveId;
+
+                        // References
+                        const refs = [];
+                        const oldRefs = cna?.references || oldFormat?.references || [];
+                        for (const ref of oldRefs) {
+                            if (ref.url) refs.push(ref.url);
+                            else if (ref.name) refs.push(ref.name);
+                        }
+
+                        // CWEs from CPEng problemTypes or old format weaknesses
+                        const cwes = [];
+                        const problemTypes = cna?.problemTypes || oldFormat?.weaknesses || [];
+                        for (const pt of problemTypes) {
+                            const descs = pt?.descriptions || pt?.description || [];
+                            for (const d of descs) {
+                                const cweId = d?.cweId || '';
+                                if (cweId) cwes.push(cweId);
+                                else {
+                                    const m = (d?.value || '')?.match(/CWE-\d+/);
+                                    if (m) cwes.push(m[0]);
+                                }
+                            }
+                        }
+
+                        // Extract vendor/product from CPEng affected[] 
+                        let vendor = '';
+                        let product = '';
+                        const affectedList = cna?.affected || [];
+                        for (const a of affectedList) {
+                            if (a?.vendor) vendor = a.vendor;
+                            if (a?.product) product = a.product;
+                            if (vendor && product) break;
+                        }
+
+                        // Timeline from cveMetadata or old format
                         let publishedDate = '';
                         let modifiedDate = '';
-                        const timeline = cveData.time || {};
-                        if (timeline.created) publishedDate = timeline.created.split('T')[0];
-                        if (timeline.updated) modifiedDate = timeline.updated.split('T')[0];
+                        const metaTime = item?.cveMetadata || item?.time || {};
+                        if (metaTime.datePublished) publishedDate = metaTime.datePublished.split('T')[0];
+                        if (metaTime.dateUpdated) modifiedDate = metaTime.dateUpdated.split('T')[0];
 
-                        // Extract tags
-                        const tags = (cveData.tags || []).map(t => String(t)).filter(Boolean);
+                        // Tags
+                        const tags = [];
+                        const meta = item?.cveMetadata || {};
+                        if (meta?.state) tags.push(meta.state);
 
                         results.push({
                             cve_id: cveId,
-                            title: cveData?.CVE_data_meta?.ID || cveId,
+                            title: title,
                             description: description,
                             severity: cvssScore != null ? classifySeverity(cvssScore) : '',
                             cvss_score: cvssScore,
                             cvss_vector: cvssVector,
                             published_date: publishedDate || new Date().toISOString().split('T')[0],
                             modified_date: modifiedDate || new Date().toISOString().split('T')[0],
-                            vendor: extractVendor(description),
-                            product: extractProduct(description),
+                            vendor: vendor || extractVendor(description),
+                            product: product || extractProduct(description),
                             tech_type: extractTechType(tags),
                             references: JSON.stringify(refs),
                             cwes: JSON.stringify(cwes),
@@ -105,17 +166,17 @@ async function fetchMitreCvew(page = 0, size = 2000) {
                         });
                     }
 
-                    console.log(`[MITRE CVEW] Page ${page}: ${results.length} records`);
+                    console.log(`[MITRE CVEW] Fetched ${results.length} records`);
                     resolve({ records: results, total: results.length });
                 } catch (err) {
-                    console.error(`[MITRE CVEW] Parse error on page ${page}:`, err.message);
+                    console.error(`[MITRE CVEW] Parse error:`, err.message);
                     resolve({ records: [], total: 0 });
                 }
             });
         });
 
         req.on('error', (err) => {
-            console.error(`[MITRE CVEW] Network error on page ${page}:`, err.message);
+            console.error(`[MITRE CVEW] Network error:`, err.message);
             resolve({ records: [], total: 0 });
         });
         req.setTimeout(60000, () => { req.destroy(); resolve({ records: [], total: 0 }); });

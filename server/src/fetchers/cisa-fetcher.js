@@ -106,10 +106,19 @@ async function fetchCisaKevJson() {
 }
 
 /**
- * Parse CWE entries from CSV field
+ * Parse CWE entries — handles both CSV (comma-separated string)
+ * and JSON (array of objects with weakRefs or cweId fields)
  */
 function parseCwes(cwesStr) {
     if (!cwesStr) return [];
+    if (Array.isArray(cwesStr)) {
+        return cwesStr.map(c => {
+            if (typeof c === 'string' && c.startsWith('CWE-')) return c;
+            if (typeof c === 'object' && c) return c.cweId || c.cwe || '';
+            return '';
+        }).filter(Boolean);
+    }
+    if (typeof cwesStr !== 'string') return [];
     return cwesStr.split(',').map(c => c.trim()).filter(c => c.startsWith('CWE-'));
 }
 

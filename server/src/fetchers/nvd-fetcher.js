@@ -1,15 +1,20 @@
 const https = require('https');
 
-/**
- * Fetch NVD CVE data using NVD API v2.0
- * https://services.nvd.nist.gov/rest/json/cves/2.0
- * Free tier: 5 req/30s, with API key: 50 req/30s
- * Implements rate limit awareness with backoff
- */
-
 const NVD_API_URL = 'https://services.nvd.nist.gov/rest/json/cves/2.0';
 const NVD_API_KEY = process.env.NVD_API_KEY || '';
 const RESULTS_PER_PAGE = 2000; // Max allowed by NVD
+
+/**
+ * Classify severity based on CVSS score
+ */
+const classifySeverity = (score) => {
+    const s = parseFloat(score);
+    if (isNaN(s)) return 'LOW';
+    if (s >= 9.0) return 'CRITICAL';
+    if (s >= 7.0) return 'HIGH';
+    if (s >= 4.0) return 'MEDIUM';
+    return 'LOW';
+};
 
 async function fetchNvd(page = 1) {
     const params = new URLSearchParams({

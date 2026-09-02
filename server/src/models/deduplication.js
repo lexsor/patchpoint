@@ -14,6 +14,7 @@ const mergeRecords = (existing, newRecords, sourceName) => {
     const records = Array.isArray(newRecords) ? newRecords : [newRecords];
     
     for (const record of records) {
+        if (!record) continue;
         const cveId = normalizeCveId(record.cve_id);
         if (!cveId) continue;
 
