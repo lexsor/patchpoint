@@ -17,6 +17,7 @@ All data is deduplicated by CVE ID, merged into unified records with source labe
 - **Multi-source data aggregation** — Fetches from CISA KEV and NVD, then enriches records via MITRE CVE Services
 - **Deduplication** — Same CVE from multiple sources merges into one record with source labels
 - **Sortable & filterable table** — Sort by CVE ID, severity, CVSS, date, vendor, tech type; filter by severity, source, date range, vendor, technology, and KEV flag
+- **Expandable rows** — Click any row (or its ▸ control) for the full description, CVSS vector, product, modified and KEV-added dates, CWE links, and reference links. Several rows can be open at once, and no extra request is made — the list response already carries every field
 - **Search** — Case-insensitive substring match across CVE ID, description, vendor, and product
 - **Alerting system** — Watchlist for CVE IDs, vendors, and products triggers alerts on new matches
 - **Configurable polling** — Automatic fetch every 6 hours (configurable via `POLL_INTERVAL_HOURS`) + manual refresh button
