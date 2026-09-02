@@ -1,9 +1,10 @@
 /*
  * Patchpoint theme.
  *
- * Dark by default. Every colour is a token on :root so the palette lives in
- * one place; adding a light theme later means redefining these tokens under a
- * [data-theme="light"] selector, not editing rules.
+ * Dark is the default: the tokens on bare :root are the dark palette, so no
+ * stored preference and no OS preference still gives you dark. Choosing light
+ * stamps data-theme="light" on <html>, which redefines the same tokens below.
+ * Rules only ever reference tokens, never literal colours.
  */
 :root {
   /* `color-scheme` is what makes native widgets dark: <select> popups,
@@ -75,6 +76,73 @@
   --font-mono: 'SF Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/*
+ * Light theme. Opt-in only -- set by the header toggle, persisted in
+ * localStorage and applied before first paint by the inline script in
+ * index.html. The OS `prefers-color-scheme` is deliberately not consulted:
+ * dark is the product default, not a mirror of the desktop.
+ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-page: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-raised: #f1f5f9;
+  --bg-inset: #f8fafc;
+
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --border-subtle: #eef2f7;
+
+  --text: #1e293b;
+  --text-heading: #0f172a;
+  /* slate-600 rather than slate-500: on --bg-raised the lighter tone measured
+     4.34:1, under the 4.5:1 AA floor for the table headers and toggle icon. */
+  --text-muted: #475569;
+  --text-dim: #64748b;
+
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-contrast: #ffffff;
+  --accent-disabled: #cbd5e1;
+
+  --sev-critical-bg: #fef2f2;
+  --sev-critical-fg: #b91c1c;
+  --sev-critical-br: #fecaca;
+  --sev-high-bg: #fff7ed;
+  --sev-high-fg: #c2410c;
+  --sev-high-br: #fed7aa;
+  --sev-medium-bg: #fefce8;
+  --sev-medium-fg: #a16207;
+  --sev-medium-br: #fef08a;
+  --sev-low-bg: #f0fdf4;
+  --sev-low-fg: #15803d;
+  --sev-low-br: #bbf7d0;
+  --sev-unknown-bg: #f1f5f9;
+  --sev-unknown-fg: #475569;
+  --sev-unknown-br: #cbd5e1;
+
+  --src-cisa-bg: #dbeafe;
+  --src-cisa-fg: #1d4ed8;
+  --src-nvd-bg: #d1fae5;
+  --src-nvd-fg: #047857;
+  --src-mitre-bg: #fce7f3;
+  --src-mitre-fg: #be185d;
+  --src-other-bg: #f1f5f9;
+  --src-other-fg: #475569;
+
+  --warn-bg: #fef3c7;
+  --warn-br: #f59e0b;
+  --warn-fg: #92400e;
+  --warn-fg-dim: #a16207;
+  --error-bg: #fef2f2;
+  --error-br: #fecaca;
+  --error-fg: #b91c1c;
+
+  --code-fg: #1e40af;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -108,6 +176,40 @@ body {
   font-size: 1.75rem;
   font-weight: 700;
   color: var(--text-heading);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+  background: var(--bg-raised);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.theme-toggle:hover {
+  background: var(--border);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .refresh-btn {
@@ -510,6 +612,7 @@ body {
   }
 
   .refresh-btn,
+  .theme-toggle,
   .pagination button,
   .search-bar input,
   .filter-group select,

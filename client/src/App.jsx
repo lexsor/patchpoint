@@ -3,6 +3,7 @@ import { getVulnerabilities, getFilterOptions, triggerFetch, getAlerts } from '.
 import VulnerabilityTable from './components/VulnerabilityTable';
 import Filters from './components/Filters';
 import AlertBanner from './components/AlertBanner';
+import ThemeToggle from './components/ThemeToggle';
 
 const PER_PAGE = 25;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -160,9 +161,12 @@ function App() {
     <div className="dashboard">
       <div className="header">
         <h1>🛡️ Patchpoint</h1>
-        <button className="refresh-btn" onClick={handleRefresh} disabled={fetching}>
-          {fetching ? 'Fetching...' : '⟳ Refresh Data'}
-        </button>
+        <div className="header-actions">
+          <ThemeToggle />
+          <button className="refresh-btn" onClick={handleRefresh} disabled={fetching}>
+            {fetching ? 'Fetching...' : '⟳ Refresh Data'}
+          </button>
+        </div>
       </div>
 
       <StatsBar total={pagination.total} />

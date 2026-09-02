@@ -3,10 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Tells the browser to paint the canvas dark before the stylesheet
-         arrives, so there is no white flash on first load. -->
+    <!-- Dark is the default, so the browser paints the canvas dark before the
+         stylesheet arrives and there is no white flash on first load. -->
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0b1220" />
+    <script>
+      // Apply a stored light preference before first paint, otherwise the page
+      // renders dark and then snaps to light. Runs synchronously in <head> and
+      // must stay dependency-free. Storage can throw (private mode, blocked
+      // site data), and dark is the correct fallback in every failure case.
+      (function () {
+        try {
+          if (localStorage.getItem('patchpoint-theme') === 'light') {
+            document.documentElement.setAttribute('data-theme', 'light');
+            document.documentElement.style.colorScheme = 'light';
+          }
+        } catch (e) {
+          /* keep the dark default */
+        }
+      })();
+    </script>
     <title>Patchpoint</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>" />
   </head>

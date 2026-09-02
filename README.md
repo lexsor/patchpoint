@@ -84,9 +84,17 @@ what has been ingested; vendor and technology options are data-derived.
 
 ### Theme
 
-Dark by default. Every colour is a CSS custom property on `:root` in
-[`client/src/styles.css`](client/src/styles.css), so a light theme means
-redefining those tokens rather than editing rules.
+Dark by default, with a light theme behind the toggle in the header. The
+choice persists in `localStorage` and is applied before first paint, so there
+is no flash on reload. The OS `prefers-color-scheme` is deliberately not
+consulted — dark is the product default, not a mirror of the desktop — and no
+preference is recorded until you actually pick one.
+
+Both palettes are CSS custom properties in
+[`client/src/styles.css`](client/src/styles.css): the tokens on bare `:root`
+are dark, and `:root[data-theme="light"]` redefines the same names. Rules only
+ever reference tokens, never literal colours. Every text and badge pair in both
+themes clears WCAG AA contrast (lowest 4.76:1 light, 5.98:1 dark).
 
 ## Architecture
 
