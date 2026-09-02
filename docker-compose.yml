@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:16-alpine
@@ -16,6 +14,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   server:
     build:
@@ -31,6 +30,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-vuln_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vuln_password}
       NVD_API_KEY: ${NVD_API_KEY:-}
+      NVD_LOOKBACK_DAYS: ${NVD_LOOKBACK_DAYS:-30}
+      NVD_MAX_PAGES: ${NVD_MAX_PAGES:-5}
+      MITRE_ENRICH_LIMIT: ${MITRE_ENRICH_LIMIT:-25}
       POLL_INTERVAL_HOURS: ${POLL_INTERVAL_HOURS:-6}
       NODE_ENV: production
     depends_on:
@@ -44,8 +46,11 @@ services:
       dockerfile: Dockerfile.client
     ports:
       - "${CLIENT_PORT:-3000}:80"
+    # nginx proxies /api to `server`, so wait for the API to pass its
+    # healthcheck rather than merely for the container to be created.
     depends_on:
-      - server
+      server:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

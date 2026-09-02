@@ -1,241 +1,164 @@
-const https = require('https');
+const { httpGetText } = require('../lib/http');
+const { classifySeverity } = require('../lib/severity');
+
+const API_BASE = 'https://cveawg.mitre.org/api/cve';
+const REQUEST_TIMEOUT_MS = 30000;
 
 /**
- * Fetch MITRE CVEW (CVE Enhancement Workspace) data
- * https://cveawg.mitre.org/api/cve/{cveId}
- * Returns structured CVE data with tags, references, timelines
- * 
- * The MITRE CVEW API requires per-CVE requests. The fetcher receives
- * an optional cveId filter — if provided, fetches that single CVE;
- * otherwise returns empty (MITRE doesn't support bulk listing).
- */
-
-/**
- * Fetch a specific CVE from MITRE CVEW API
+ * Fetch a single CVE record from the MITRE CVE Services API.
+ *
+ * MITRE has no bulk listing endpoint — records are addressed one CVE at a
+ * time — so the orchestrator uses this to *enrich* CVEs already discovered
+ * via CISA KEV and NVD. Calling it with no ID is a no-op by design.
+ *
+ * @param {string} cveId
  */
 async function fetchMitreCvew(cveId = '') {
-    if (!cveId) {
-        // MITRE doesn't support bulk listing — return placeholder
-        console.log('[MITRE CVEW] Skipping bulk fetch (API requires per-CVE requests)');
+    const id = String(cveId || '').trim().toUpperCase();
+
+    if (!id) {
+        console.log('[MITRE CVEW] No CVE ID supplied; MITRE has no bulk listing endpoint');
         return { records: [], total: 0 };
     }
-    
-    const url = `https://cveawg.mitre.org/api/cve/${cveId}`;
-    console.log(`[MITRE CVEW] Fetching: ${url}`);
 
-    return new Promise((resolve, reject) => {
-        const req = https.get(url, {
-            headers: {
-                'User-Agent': 'VulnerabilityDashboard/1.0',
-                'Accept': 'application/json',
-            },
-        }, (res) => {
-            if (res.statusCode >= 400) {
-                reject(new Error(`MITRE CVEW HTTP ${res.statusCode}`));
-                return;
-            }
+    const url = `${API_BASE}/${encodeURIComponent(id)}`;
+    console.log(`[MITRE CVEW] Fetching ${url}`);
 
-            let data = '';
-            res.on('data', (chunk) => data += chunk);
-            res.on('end', () => {
-                try {
-                    const parsed = JSON.parse(data);
-                    const results = [];
-
-                    // MITRE API returns CPEng format:
-                    // { dataType: "CVE_RECORD", cveMetadata, containers: { cna: { ... } } }
-                    // or older format with cve_Items array
-                    const cveData = parsed;
-                    const resultsArr = [cveData];
-
-                    for (const item of resultsArr) {
-                        // Try CPEng format first
-                        const cveId = item?.cveMetadata?.cveId ||
-                                      item?.id ||
-                                      item?.CVE_data_meta?.ID || '';
-
-                        if (!cveId) continue;
-
-                        // CPEng: containers.cna.*  |  Old: item.*
-                        const cna = item?.containers?.cna || {};
-                        const oldFormat = item?.cve || item;
-
-                        // Description from CPEng or old format
-                        let description = '';
-                        const oldDescs = cna?.descriptions || oldFormat?.descriptions || oldFormat?.description?.description_data || [];
-                        for (const d of oldDescs) {
-                            if (d.value && (d.lang === 'en' || !d.lang)) {
-                                description = d.value;
-                                break;
-                            }
-                        }
-
-                        // CVSS from CPEng (first container, cna metrics) or old format
-                        let cvssScore = null;
-                        let cvssVector = '';
-                        
-                        // CPEng format: containers.cna.metrics[].cvssV3_1 or cvssV4_0
-                        const cnaMetrics = cna?.metrics || [];
-                        for (const m of cnaMetrics) {
-                            const v4 = m?.cvssV4_0;
-                            const v31 = m?.cvssV3_1;
-                            const v30 = m?.cvssV3_0;
-                            const v20 = m?.cvssV2_0;
-                            const target = v4 || v31 || v30 || v20;
-                            if (target) {
-                                cvssScore = parseFloat(target?.baseScore);
-                                cvssVector = target?.vectorString || '';
-                                break;
-                            }
-                        }
-                        
-                        // Fallback to old format metrics
-                        if (cvssScore == null) {
-                            const metrics = oldFormat?.metrics?.cvssMetricV31 || 
-                                          oldFormat?.metrics?.cvssMetricV30 || [];
-                            const primary = metrics.find(m => m.cveDataTags?.includes('Primary')) || metrics[0];
-                            if (primary?.cvssData) {
-                                cvssScore = parseFloat(primary.cvssData.baseMetricScore) || null;
-                                cvssVector = primary.cvssData.vectorString || '';
-                            }
-                        }
-
-                        // Title from CPEng
-                        const title = cna?.title || oldFormat?.title || cveId;
-
-                        // References
-                        const refs = [];
-                        const oldRefs = cna?.references || oldFormat?.references || [];
-                        for (const ref of oldRefs) {
-                            if (ref.url) refs.push(ref.url);
-                            else if (ref.name) refs.push(ref.name);
-                        }
-
-                        // CWEs from CPEng problemTypes or old format weaknesses
-                        const cwes = [];
-                        const problemTypes = cna?.problemTypes || oldFormat?.weaknesses || [];
-                        for (const pt of problemTypes) {
-                            const descs = pt?.descriptions || pt?.description || [];
-                            for (const d of descs) {
-                                const cweId = d?.cweId || '';
-                                if (cweId) cwes.push(cweId);
-                                else {
-                                    const m = (d?.value || '')?.match(/CWE-\d+/);
-                                    if (m) cwes.push(m[0]);
-                                }
-                            }
-                        }
-
-                        // Extract vendor/product from CPEng affected[] 
-                        let vendor = '';
-                        let product = '';
-                        const affectedList = cna?.affected || [];
-                        for (const a of affectedList) {
-                            if (a?.vendor) vendor = a.vendor;
-                            if (a?.product) product = a.product;
-                            if (vendor && product) break;
-                        }
-
-                        // Timeline from cveMetadata or old format
-                        let publishedDate = '';
-                        let modifiedDate = '';
-                        const metaTime = item?.cveMetadata || item?.time || {};
-                        if (metaTime.datePublished) publishedDate = metaTime.datePublished.split('T')[0];
-                        if (metaTime.dateUpdated) modifiedDate = metaTime.dateUpdated.split('T')[0];
-
-                        // Tags
-                        const tags = [];
-                        const meta = item?.cveMetadata || {};
-                        if (meta?.state) tags.push(meta.state);
-
-                        results.push({
-                            cve_id: cveId,
-                            title: title,
-                            description: description,
-                            severity: cvssScore != null ? classifySeverity(cvssScore) : '',
-                            cvss_score: cvssScore,
-                            cvss_vector: cvssVector,
-                            published_date: publishedDate || new Date().toISOString().split('T')[0],
-                            modified_date: modifiedDate || new Date().toISOString().split('T')[0],
-                            vendor: vendor || extractVendor(description),
-                            product: product || extractProduct(description),
-                            tech_type: extractTechType(tags),
-                            references: JSON.stringify(refs),
-                            cwes: JSON.stringify(cwes),
-                            tags: JSON.stringify(tags),
-                        });
-                    }
-
-                    console.log(`[MITRE CVEW] Fetched ${results.length} records`);
-                    resolve({ records: results, total: results.length });
-                } catch (err) {
-                    console.error(`[MITRE CVEW] Parse error:`, err.message);
-                    resolve({ records: [], total: 0 });
-                }
-            });
-        });
-
-        req.on('error', (err) => {
-            console.error(`[MITRE CVEW] Network error:`, err.message);
-            resolve({ records: [], total: 0 });
-        });
-        req.setTimeout(60000, () => { req.destroy(); resolve({ records: [], total: 0 }); });
+    const res = await httpGetText(url, {
+        headers: { Accept: 'application/json' },
+        timeoutMs: REQUEST_TIMEOUT_MS,
     });
-}
 
-function classifySeverity(score) {
-    if (score >= 9.0) return 'CRITICAL';
-    if (score >= 7.0) return 'HIGH';
-    if (score >= 4.0) return 'MEDIUM';
-    return 'LOW';
-}
-
-function extractVendor(description) {
-    if (!description) return '';
-    // Common vendor patterns in vulnerability descriptions
-    const patterns = [
-        /for (\w+(?: \w+)*)\s+(?:in|on|for)/i,
-        /affects (\w+(?: \w+)*)/i,
-        /affecting (\w+(?: \w+)*)/i,
-    ];
-    for (const p of patterns) {
-        const m = description.match(p);
-        if (m) return m[1];
+    if (res.statusCode === 404) {
+        return { records: [], total: 0 };
     }
-    return '';
-}
-
-function extractProduct(description) {
-    if (!description) return '';
-    const patterns = [
-        /(\w+(?: \w+)*\s+(?:web|server|api|service|application|platform|framework|software))/i,
-    ];
-    for (const p of patterns) {
-        const m = description.match(p);
-        if (m) return m[1];
+    if (res.statusCode >= 400) {
+        throw new Error(`MITRE CVEW HTTP ${res.statusCode} for ${id}`);
     }
-    return '';
+
+    const record = parseCveRecord(JSON.parse(res.body));
+    if (!record) return { records: [], total: 0 };
+
+    console.log(`[MITRE CVEW] Fetched ${record.cve_id}`);
+    return { records: [record], total: 1 };
 }
 
-function extractTechType(tags) {
-    if (!tags || tags.length === 0) return '';
-    const tagList = Array.isArray(tags) ? tags : JSON.parse(tags);
-    const mapping = {
-        'networking': ['network', 'router', 'switch', 'firewall', 'cisco'],
-        'mobile': ['android', 'ios', 'mobile', 'smartphone'],
-        'os': ['linux', 'windows', 'macos', 'operating system', 'kernel'],
-        'web': ['apache', 'nginx', 'iis', 'tomcat', 'nginx', 'wordpress', 'drupal', 'web'],
-        'database': ['mysql', 'postgresql', 'mongodb', 'oracle', 'sql'],
-        'browser': ['chrome', 'firefox', 'safari', 'edge', 'browser'],
-        'container': ['docker', 'kubernetes', 'container', 'k8s'],
+/**
+ * Map a CVE Record (JSON 5.x) into the internal record shape.
+ * Shape: { cveMetadata: {...}, containers: { cna: {...} } }
+ */
+function parseCveRecord(payload) {
+    const meta = (payload && payload.cveMetadata) || {};
+    const cna = (payload && payload.containers && payload.containers.cna) || {};
+
+    const cveId = meta.cveId || payload.id || '';
+    if (!cveId) return null;
+
+    const description = pickEnglish(cna.descriptions);
+    const cvss = extractCvss(cna.metrics);
+    const { vendor, product } = extractAffected(cna.affected);
+
+    return {
+        cve_id: cveId,
+        title: cna.title || '',
+        description,
+        severity: cvss.severity || (cvss.score != null ? classifySeverity(cvss.score) : ''),
+        cvss_score: cvss.score,
+        cvss_vector: cvss.vector,
+        published_date: toDateOnly(meta.datePublished),
+        modified_date: toDateOnly(meta.dateUpdated),
+        vendor,
+        product,
+        tech_type: classifyTechType([product, vendor, description].join(' ')),
+        references: (cna.references || []).map((r) => r.url).filter(Boolean),
+        cwes: extractCwes(cna.problemTypes),
     };
-    const lowerTags = tagList.join(' ').toLowerCase();
-    for (const [type, keywords] of Object.entries(mapping)) {
-        for (const kw of keywords) {
-            if (lowerTags.includes(kw)) return type;
+}
+
+function pickEnglish(descriptions) {
+    for (const d of descriptions || []) {
+        if (d && d.value && (d.lang === 'en' || (d.lang || '').startsWith('en'))) return d.value;
+    }
+    const first = (descriptions || [])[0];
+    return (first && first.value) || '';
+}
+
+/** Newest CVSS version present wins. */
+function extractCvss(metrics) {
+    for (const metric of metrics || []) {
+        const data = metric && (metric.cvssV4_0 || metric.cvssV3_1 || metric.cvssV3_0 || metric.cvssV2_0);
+        if (!data) continue;
+
+        const score = data.baseScore != null ? parseFloat(data.baseScore) : null;
+        return {
+            score: Number.isFinite(score) ? score : null,
+            severity: data.baseSeverity ? String(data.baseSeverity).toUpperCase() : '',
+            vector: data.vectorString || '',
+        };
+    }
+    return { score: null, severity: '', vector: '' };
+}
+
+function extractCwes(problemTypes) {
+    const found = new Set();
+    for (const pt of problemTypes || []) {
+        for (const d of (pt && pt.descriptions) || []) {
+            if (d && d.cweId) {
+                found.add(d.cweId);
+                continue;
+            }
+            const match = ((d && d.value) || '').match(/CWE-\d+/);
+            if (match) found.add(match[0]);
         }
     }
-    return 'other';
+    return [...found];
 }
 
-module.exports = { fetchMitreCvew };
+/**
+ * Vendor and product come from the structured `affected` array only.
+ * An earlier version regex-scraped noun phrases out of the description
+ * ("affects (\w+)"), which fabricated vendor names and polluted the vendor
+ * filter with junk. Better to leave the field empty than to invent it.
+ */
+function extractAffected(affected) {
+    for (const entry of affected || []) {
+        if (!entry) continue;
+        const vendor = entry.vendor && entry.vendor !== 'n/a' ? entry.vendor : '';
+        const product = entry.product && entry.product !== 'n/a' ? entry.product : '';
+        if (vendor || product) return { vendor, product };
+    }
+    return { vendor: '', product: '' };
+}
+
+const TECH_TYPE_KEYWORDS = {
+    networking: ['router', 'switch', 'firewall', 'cisco', 'juniper', 'fortinet', 'vpn'],
+    mobile: ['android', 'ios', 'iphone', 'smartphone', 'mobile'],
+    os: ['linux', 'windows', 'macos', 'operating system', 'kernel', 'solaris'],
+    web: ['apache', 'nginx', 'tomcat', 'wordpress', 'drupal', 'joomla', 'iis', 'http server'],
+    database: ['mysql', 'postgresql', 'mongodb', 'oracle database', 'mariadb', 'sql server'],
+    browser: ['chrome', 'chromium', 'firefox', 'safari', 'edge', 'webkit'],
+    container: ['docker', 'kubernetes', 'containerd', 'k8s', 'openshift'],
+};
+
+/**
+ * Best-effort technology bucket from product/vendor/description text.
+ * Returns '' rather than 'other' when nothing matches, so the Technology
+ * filter only ever offers buckets that were actually identified.
+ */
+function classifyTechType(text) {
+    const haystack = String(text || '').toLowerCase();
+    if (!haystack.trim()) return '';
+
+    for (const [type, keywords] of Object.entries(TECH_TYPE_KEYWORDS)) {
+        if (keywords.some((kw) => haystack.includes(kw))) return type;
+    }
+    return '';
+}
+
+function toDateOnly(value) {
+    if (!value || typeof value !== 'string') return null;
+    const datePart = value.split('T')[0];
+    return /^\d{4}-\d{2}-\d{2}$/.test(datePart) ? datePart : null;
+}
+
+module.exports = { fetchMitreCvew, parseCveRecord, classifyTechType };

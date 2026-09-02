@@ -1,43 +1,29 @@
-# Build stage for backend
-FROM node:20-alpine AS backend-build
+# Patchpoint backend API.
+#
+# The frontend is a separate image (Dockerfile.client) served by nginx, so
+# nothing here builds or serves client assets.
 
-WORKDIR /app
-
-COPY server/package.json server/package-lock.json* ./
-RUN npm install --production
-
-# Build stage for frontend
-FROM node:20-alpine AS frontend-build
-
-WORKDIR /app
-
-COPY client/package.json client/package-lock.json* ./
-RUN npm install
-
-COPY client/ ./
-RUN npm run build
-
-# Final stage
 FROM node:20-alpine
 
-# Install PostgreSQL client
-RUN apk add --no-cache postgresql-client
+ENV NODE_ENV=production
 
 WORKDIR /app
 
-# Copy backend
-COPY server/package.json server/package-lock.json* ./
-RUN npm install --production
+# Install dependencies first so the layer caches independently of source.
+# `npm ci` installs exactly what the lockfile pins; `npm install` can resolve
+# to different versions between builds.
+COPY server/package.json server/package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Copy frontend build
-COPY --from=frontend-build /app/dist ./dist
-
-# Copy server source
 COPY server/src ./src
 
-# Create data directory
-RUN mkdir -p /app/data
+# Drop privileges. The node image ships an unprivileged `node` user.
+USER node
 
 EXPOSE 3001
+
+# Report unhealthy until the API answers, so compose can gate the frontend.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+    CMD node -e "require('http').get('http://127.0.0.1:3001/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 
 CMD ["node", "src/index.js"]

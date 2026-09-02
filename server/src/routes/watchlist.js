@@ -46,8 +46,18 @@ router.post('/', async (req, res) => {
 // DELETE /api/watchlist/:id - Remove watchlist item
 router.delete('/:id', async (req, res) => {
     try {
+        const id = parseInt(req.params.id, 10);
+        if (!Number.isFinite(id)) {
+            return res.status(400).json({ error: 'id must be an integer' });
+        }
+
         const db = getDb();
-        await db.query('DELETE FROM watchlist WHERE id = $1', [req.params.id]);
+        const result = await db.query('DELETE FROM watchlist WHERE id = $1', [id]);
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ error: 'Watchlist item not found' });
+        }
+
         res.json({ success: true });
     } catch (err) {
         console.error('Error removing watchlist item:', err.message);

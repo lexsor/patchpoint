@@ -1,125 +1,114 @@
-const https = require('https');
-const http = require('http');
 const papaparse = require('papaparse');
-const { execSync } = require('child_process');
+const { httpGetText } = require('../lib/http');
+
+const CSV_URL = 'https://www.cisa.gov/sites/default/files/csv/known_exploited_vulnerabilities.csv';
+const JSON_URL = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json';
+const REQUEST_TIMEOUT_MS = 30000;
 
 /**
- * Fetch CISA KEV from CSV source
- * https://www.cisa.gov/sites/default/files/csv/known_exploited_vulnerabilities.csv
+ * CISA KEV asserts a CVE is being exploited in the wild but publishes no CVSS
+ * score. HIGH is the floor we record; if NVD or MITRE later supplies a real
+ * score, the deduplication merge raises the severity to match.
  */
+const KEV_ASSUMED_SEVERITY = 'HIGH';
+
+/** Fetch the CISA KEV catalog (CSV feed). */
 async function fetchCisaKev() {
-    const url = 'https://www.cisa.gov/sites/default/files/csv/known_exploited_vulnerabilities.csv';
-    console.log(`[CISA KEV] Fetching from ${url}`);
-    
-    return new Promise((resolve, reject) => {
-        const transport = url.startsWith('https') ? https : http;
-        const req = transport.get(url, { headers: { 'User-Agent': 'VulnerabilityDashboard/1.0' } }, (res) => {
-            if (res.statusCode >= 400) {
-                reject(new Error(`CISA KEV HTTP ${res.statusCode}`));
-                return;
-            }
-            
-            let data = '';
-            res.on('data', (chunk) => data += chunk);
-            res.on('end', () => {
-                try {
-                    const results = [];
-                    const parsed = papaparse.parse(data, { header: true, skipEmptyLines: true });
-                    
-                    for (const row of parsed.data) {
-                        results.push({
-                            cve_id: row['cveID'] || '',
-                            vendor: row['vendorProject'] || '',
-                            product: row['product'] || '',
-                            title: row['vulnerabilityName'] || '',
-                            description: row['shortDescription'] || '',
-                            published_date: row['dateAdded'] || new Date().toISOString().split('T')[0],
-                            kev_flag: true,
-                            kev_date_added: row['dateAdded'] || null,
-                            cwes: parseCwes(row['cwes'] || ''),
-                            severity: 'HIGH', // CISA KEV implies known exploitation
-                        });
-                    }
-                    
-                    console.log(`[CISA KEV] Fetched ${results.length} records`);
-                    resolve({ records: results, total: results.length });
-                } catch (err) {
-                    reject(err);
-                }
-            });
-        });
-        
-        req.on('error', reject);
-        req.setTimeout(30000, () => { req.destroy(); reject(new Error('CISA KEV timeout')); });
-    });
-}
+    console.log(`[CISA KEV] Fetching ${CSV_URL}`);
+    const res = await httpGetText(CSV_URL, { timeoutMs: REQUEST_TIMEOUT_MS });
 
-/**
- * Fetch CISA KEV from JSON source
- * https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
- */
-async function fetchCisaKevJson() {
-    const url = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json';
-    console.log(`[CISA KEV JSON] Fetching from ${url}`);
-    
-    return new Promise((resolve, reject) => {
-        const transport = url.startsWith('https') ? https : http;
-        const req = transport.get(url, { headers: { 'User-Agent': 'VulnerabilityDashboard/1.0' } }, (res) => {
-            if (res.statusCode >= 400) {
-                reject(new Error(`CISA KEV JSON HTTP ${res.statusCode}`));
-                return;
-            }
-            
-            let data = '';
-            res.on('data', (chunk) => data += chunk);
-            res.on('end', () => {
-                try {
-                    const parsed = JSON.parse(data);
-                    const results = [];
-                    
-                    for (const item of parsed.vulnerabilities) {
-                        results.push({
-                            cve_id: item.cveID || '',
-                            vendor: item.vendorProject || '',
-                            product: item.product || '',
-                            title: item.vulnerabilityName || '',
-                            description: item.shortDescription || '',
-                            published_date: item.dateAdded || new Date().toISOString().split('T')[0],
-                            kev_flag: true,
-                            kev_date_added: item.dateAdded || null,
-                            cwes: parseCwes(item.cwes || ''),
-                            severity: 'HIGH',
-                        });
-                    }
-                    
-                    console.log(`[CISA KEV JSON] Fetched ${results.length} records`);
-                    resolve({ records: results, total: results.length });
-                } catch (err) {
-                    reject(err);
-                }
-            });
-        });
-        
-        req.on('error', reject);
-        req.setTimeout(30000, () => { req.destroy(); reject(new Error('CISA KEV JSON timeout')); });
-    });
-}
-
-/**
- * Parse CWE entries — handles both CSV (comma-separated string)
- * and JSON (array of objects with weakRefs or cweId fields)
- */
-function parseCwes(cwesStr) {
-    if (!cwesStr) return [];
-    if (Array.isArray(cwesStr)) {
-        return cwesStr.map(c => {
-            if (typeof c === 'string' && c.startsWith('CWE-')) return c;
-            if (typeof c === 'object' && c) return c.cweId || c.cwe || '';
-            return '';
-        }).filter(Boolean);
+    if (res.statusCode >= 400) {
+        throw new Error(`CISA KEV HTTP ${res.statusCode}`);
     }
-    if (typeof cwesStr !== 'string') return [];
-    return cwesStr.split(',').map(c => c.trim()).filter(c => c.startsWith('CWE-'));
+
+    const parsed = papaparse.parse(res.body, { header: true, skipEmptyLines: true });
+    const records = (parsed.data || [])
+        .map((row) => toRecord({
+            cveID: row.cveID,
+            vendorProject: row.vendorProject,
+            product: row.product,
+            vulnerabilityName: row.vulnerabilityName,
+            shortDescription: row.shortDescription,
+            dateAdded: row.dateAdded,
+            cwes: row.cwes,
+        }))
+        .filter(Boolean);
+
+    console.log(`[CISA KEV] Fetched ${records.length} records`);
+    return { records, total: records.length };
 }
 
-module.exports = { fetchCisaKev, fetchCisaKevJson };
+/** Fetch the CISA KEV catalog (JSON feed). */
+async function fetchCisaKevJson() {
+    console.log(`[CISA KEV JSON] Fetching ${JSON_URL}`);
+    const res = await httpGetText(JSON_URL, {
+        headers: { Accept: 'application/json' },
+        timeoutMs: REQUEST_TIMEOUT_MS,
+    });
+
+    if (res.statusCode >= 400) {
+        throw new Error(`CISA KEV JSON HTTP ${res.statusCode}`);
+    }
+
+    const parsed = JSON.parse(res.body);
+    const records = (parsed.vulnerabilities || []).map(toRecord).filter(Boolean);
+
+    console.log(`[CISA KEV JSON] Fetched ${records.length} records`);
+    return { records, total: records.length };
+}
+
+/** Shared mapping for both feeds — identical field names, different container. */
+function toRecord(item) {
+    const cveId = (item.cveID || '').trim();
+    if (!cveId) return null;
+
+    const dateAdded = normalizeDate(item.dateAdded);
+
+    return {
+        cve_id: cveId,
+        vendor: (item.vendorProject || '').trim(),
+        product: (item.product || '').trim(),
+        title: (item.vulnerabilityName || '').trim(),
+        description: (item.shortDescription || '').trim(),
+        // dateAdded is when CISA catalogued it, not when the CVE was
+        // published. Recording it as published_date would be wrong, and
+        // fabricating today's date would be worse — leave it unset and let
+        // NVD/MITRE supply the real publish date.
+        published_date: null,
+        kev_flag: true,
+        kev_date_added: dateAdded,
+        cwes: parseCwes(item.cwes),
+        severity: KEV_ASSUMED_SEVERITY,
+    };
+}
+
+function normalizeDate(value) {
+    if (!value || typeof value !== 'string') return null;
+    const datePart = value.trim().split('T')[0];
+    return /^\d{4}-\d{2}-\d{2}$/.test(datePart) ? datePart : null;
+}
+
+/**
+ * Parse CWE entries. The CSV feed gives a comma-separated string; the JSON
+ * feed gives an array of strings. Always returns an array — the repository
+ * serializes it, so a fetcher must not hand back a pre-stringified value.
+ */
+function parseCwes(cwes) {
+    if (!cwes) return [];
+
+    const candidates = Array.isArray(cwes)
+        ? cwes
+        : (typeof cwes === 'string' ? cwes.split(',') : []);
+
+    const found = new Set();
+    for (const candidate of candidates) {
+        const text = typeof candidate === 'string'
+            ? candidate
+            : (candidate && (candidate.cweId || candidate.cwe)) || '';
+        const match = String(text).trim().match(/CWE-\d+/);
+        if (match) found.add(match[0]);
+    }
+    return [...found];
+}
+
+module.exports = { fetchCisaKev, fetchCisaKevJson, parseCwes, toRecord };

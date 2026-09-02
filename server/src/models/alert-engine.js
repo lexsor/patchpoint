@@ -2,97 +2,120 @@ const { getDb } = require('../db/client');
 
 /**
  * Alert Engine
- * 
- * Checks newly fetched vulnerabilities against user watchlist
- * and generates alerts for matches.
+ *
+ * Checks recently updated vulnerabilities against the user watchlist and
+ * records an alert for each match.
+ *
+ * Alerts are deduplicated in the database by UNIQUE(cve_id, match_type,
+ * match_value), so re-running a fetch cycle cannot re-raise an alert the user
+ * has already been shown. `run()` returns only the alerts newly created by
+ * this pass.
  */
 
-// Check vulnerabilities against watchlist after a fetch
+const RECENT_WINDOW_HOURS = 24;
+const MAX_RETAINED_ALERTS = 1000;
+
 async function run() {
     const db = getDb();
-    
-    // Get watchlist items
+
     const watchlistResult = await db.query('SELECT * FROM watchlist');
     const watchlist = watchlistResult.rows;
-    
+
     if (watchlist.length === 0) {
         return [];
     }
-    
-    // Get recently modified/created vulnerabilities (last 24 hours)
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    const since = new Date(Date.now() - RECENT_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
     const vulnResult = await db.query(
-        'SELECT * FROM vulnerabilities WHERE updated_at >= $1',
+        'SELECT cve_id, vendor, product, source_labels FROM vulnerabilities WHERE updated_at >= $1',
         [since]
     );
-    const vulnerabilities = vulnResult.rows;
-    
-    const alerts = [];
-    
-    for (const vuln of vulnerabilities) {
+
+    const created = [];
+
+    for (const vuln of vulnResult.rows) {
         for (const watch of watchlist) {
-            let match = false;
-            let matchType = '';
-            
-            if (watch.item_type === 'cve_id') {
-                if (vuln.cve_id.toUpperCase() === watch.item.toUpperCase().replace(/\s/g, '')) {
-                    match = true;
-                    matchType = 'CVE ID matched';
-                }
-            } else if (watch.item_type === 'vendor') {
-                if (vuln.vendor && vuln.vendor.toLowerCase().includes(watch.item.toLowerCase())) {
-                    match = true;
-                    matchType = 'Vendor match';
-                }
-            } else if (watch.item_type === 'product') {
-                if (vuln.product && vuln.product.toLowerCase().includes(watch.item.toLowerCase())) {
-                    match = true;
-                    matchType = 'Product match';
-                }
-            }
-            
-            if (match) {
-                const alert = {
-                    cve_id: vuln.cve_id,
-                    match_type: matchType,
-                    match_value: watch.item,
-                    message: `Vulnerability ${vuln.cve_id} matches watchlist item "${watch.item}" (${matchType}) from source(s): ${vuln.source_labels}`,
-                };
-                alerts.push(alert);
-                
-                // Store alert in database
-                await db.query(
-                    'INSERT INTO alerts (cve_id, match_type, match_value, message) VALUES ($1, $2, $3, $4)',
-                    [vuln.cve_id, matchType, watch.item, alert.message]
-                );
+            const matchType = matchWatchlistItem(vuln, watch);
+            if (!matchType) continue;
+
+            const message = `Vulnerability ${vuln.cve_id} matches watchlist item "${watch.item}" `
+                + `(${matchType}) from source(s): ${vuln.source_labels}`;
+
+            // DO NOTHING means an existing alert for this pair is left alone
+            // and RETURNING yields no row, so `created` holds only new alerts.
+            const inserted = await db.query(`
+                INSERT INTO alerts (cve_id, match_type, match_value, message)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (cve_id, match_type, match_value) DO NOTHING
+                RETURNING *
+            `, [vuln.cve_id, matchType, watch.item, message]);
+
+            if (inserted.rows.length > 0) {
+                created.push(inserted.rows[0]);
             }
         }
     }
-    
-    return alerts;
+
+    return created;
 }
 
-// Get all alerts
+/**
+ * Returns a match-type label, or '' when the vulnerability does not match.
+ * Exported so it can be tested directly rather than reimplemented in a test.
+ */
+function matchWatchlistItem(vuln, watch) {
+    const needle = String(watch.item || '').trim();
+    if (!needle) return '';
+
+    if (watch.item_type === 'cve_id') {
+        const a = String(vuln.cve_id || '').toUpperCase().replace(/\s/g, '');
+        const b = needle.toUpperCase().replace(/\s/g, '');
+        return a && a === b ? 'CVE ID matched' : '';
+    }
+
+    if (watch.item_type === 'vendor') {
+        return vuln.vendor && vuln.vendor.toLowerCase().includes(needle.toLowerCase())
+            ? 'Vendor match'
+            : '';
+    }
+
+    if (watch.item_type === 'product') {
+        return vuln.product && vuln.product.toLowerCase().includes(needle.toLowerCase())
+            ? 'Product match'
+            : '';
+    }
+
+    return '';
+}
+
 async function getAlerts(limit = 50) {
-    const db = getDb();
-    const result = await db.query(
-        'SELECT * FROM alerts ORDER BY created_at DESC LIMIT $1',
+    const result = await getDb().query(
+        'SELECT * FROM alerts ORDER BY created_at DESC, id DESC LIMIT $1',
         [limit]
     );
     return result.rows;
 }
 
-// Get unread alert count
 async function getAlertCount() {
-    const db = getDb();
-    const result = await db.query('SELECT COUNT(*) as count FROM alerts');
-    return parseInt(result.rows[0].count);
+    const result = await getDb().query('SELECT COUNT(*) as count FROM alerts');
+    return parseInt(result.rows[0].count, 10);
 }
 
-// Clear old alerts (keep last 1000)
+/** Delete every alert. Backs DELETE /api/alerts. */
 async function clearAlerts() {
-    const db = getDb();
-    await db.query('DELETE FROM alerts WHERE id NOT IN (SELECT id FROM alerts ORDER BY created_at DESC LIMIT 1000)');
+    const result = await getDb().query('DELETE FROM alerts');
+    return result.rowCount;
 }
 
-module.exports = { run, getAlerts, getAlertCount, clearAlerts };
+/** Trim the alert log to the most recent MAX_RETAINED_ALERTS entries. */
+async function pruneAlerts(keep = MAX_RETAINED_ALERTS) {
+    const result = await getDb().query(`
+        DELETE FROM alerts
+        WHERE id NOT IN (
+            SELECT id FROM alerts ORDER BY created_at DESC, id DESC LIMIT $1
+        )
+    `, [keep]);
+    return result.rowCount;
+}
+
+module.exports = { run, matchWatchlistItem, getAlerts, getAlertCount, clearAlerts, pruneAlerts };
