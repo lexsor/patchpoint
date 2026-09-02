@@ -121,22 +121,14 @@ async function fetchCisaSource() {
 }
 
 /**
- * NVD, restricted to a recent modification window.
+ * Page through an NVD query, storing each page as it arrives.
  *
- * The previous implementation paged by index from 0 on every cycle, so it
- * re-fetched the same first 10,000 CVEs (of ~385,000) forever and never saw
- * an update. `lastModStartDate`/`lastModEndDate` make each poll pick up what
- * actually changed. NVD caps the window at 120 days.
+ * @param {object} query   Extra fetchNvd options (window bounds, hasKev).
+ * @param {number} maxPages
+ * @param {number} delayMs Spacing between requests, to respect rate limits.
+ * @param {string} label   For the truncation warning.
  */
-async function fetchNvdSource() {
-    const lookbackDays = Math.min(intFromEnv('NVD_LOOKBACK_DAYS', 30), 120);
-    const maxPages = intFromEnv('NVD_MAX_PAGES', 5);
-    const apiKey = process.env.NVD_API_KEY || '';
-    const delayMs = apiKey ? NVD_DELAY_WITH_KEY_MS : NVD_DELAY_NO_KEY_MS;
-
-    const end = new Date();
-    const start = new Date(end.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
-
+async function pageThroughNvd(query, { maxPages, delayMs, label }) {
     let startIndex = 0;
     let fetched = 0;
     let stored = 0;
@@ -144,12 +136,7 @@ async function fetchNvdSource() {
     let truncated = false;
 
     for (;;) {
-        const page = await fetchNvd({
-            startIndex,
-            lastModStartDate: start.toISOString(),
-            lastModEndDate: end.toISOString(),
-            apiKey,
-        });
+        const page = await fetchNvd({ ...query, startIndex });
 
         fetched += page.total;
         if (page.records.length > 0) {
@@ -164,8 +151,8 @@ async function fetchNvdSource() {
         if (pages >= maxPages) {
             truncated = true;
             console.warn(
-                `[Fetcher] NVD stopped at the ${maxPages}-page cap with ${page.totalResults} records available ` +
-                `in the ${lookbackDays}-day window. Raise NVD_MAX_PAGES or set NVD_API_KEY to ingest the rest.`
+                `[Fetcher] NVD ${label} stopped at the ${maxPages}-page cap with ${page.totalResults} records `
+                + 'available. Raise NVD_MAX_PAGES or set NVD_API_KEY to ingest the rest.'
             );
             break;
         }
@@ -173,7 +160,49 @@ async function fetchNvdSource() {
         await sleep(delayMs);
     }
 
-    return { fetched, stored, extra: { pages, truncated } };
+    return { fetched, stored, pages, truncated };
+}
+
+/**
+ * NVD, in two sweeps.
+ *
+ * 1. `hasKev` — every CVE in the CISA KEV catalogue (~1,700, so one page
+ *    covers it). CISA publishes no CVSS score, so without this pass the KEV
+ *    records that dominate the table carry no severity at all and the
+ *    severity filter has nothing real to filter on.
+ * 2. A rolling modification window, for everything that changed recently.
+ *    The original implementation paged by index from 0 every cycle, so it
+ *    re-read the same first 10,000 CVEs (of ~385,000) forever and never saw
+ *    an update. NVD caps the window at 120 days.
+ */
+async function fetchNvdSource() {
+    const lookbackDays = Math.min(intFromEnv('NVD_LOOKBACK_DAYS', 30), 120);
+    const maxPages = intFromEnv('NVD_MAX_PAGES', 5);
+    const apiKey = process.env.NVD_API_KEY || '';
+    const delayMs = apiKey ? NVD_DELAY_WITH_KEY_MS : NVD_DELAY_NO_KEY_MS;
+
+    const kev = await pageThroughNvd({ hasKev: true, apiKey }, { maxPages, delayMs, label: 'KEV sweep' });
+    console.log(`[Fetcher] NVD KEV sweep: ${kev.stored} scored from ${kev.fetched} fetched`);
+
+    await sleep(delayMs);
+
+    const end = new Date();
+    const start = new Date(end.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
+    const recent = await pageThroughNvd({
+        lastModStartDate: start.toISOString(),
+        lastModEndDate: end.toISOString(),
+        apiKey,
+    }, { maxPages, delayMs, label: `${lookbackDays}-day window` });
+
+    return {
+        fetched: kev.fetched + recent.fetched,
+        stored: kev.stored + recent.stored,
+        extra: {
+            kev: { fetched: kev.fetched, stored: kev.stored, truncated: kev.truncated },
+            recent: { fetched: recent.fetched, stored: recent.stored, truncated: recent.truncated },
+            truncated: kev.truncated || recent.truncated,
+        },
+    };
 }
 
 /**

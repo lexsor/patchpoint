@@ -264,13 +264,6 @@ class VulnerabilityRepository {
         return (await getDb().query('SELECT * FROM sources ORDER BY last_fetched DESC NULLS LAST')).rows;
     }
 
-    async getSeverities() {
-        const result = await getDb().query(
-            "SELECT DISTINCT severity FROM vulnerabilities WHERE severity IS NOT NULL AND severity <> '' ORDER BY severity"
-        );
-        return result.rows.map((r) => r.severity);
-    }
-
     async getVendors() {
         const result = await getDb().query(
             "SELECT DISTINCT vendor FROM vulnerabilities WHERE vendor IS NOT NULL AND vendor <> '' ORDER BY vendor"

@@ -20,9 +20,12 @@ const REQUEST_TIMEOUT_MS = 60000;
  * @param {number} opts.startIndex        Offset into the result set.
  * @param {string} [opts.lastModStartDate] ISO-8601. Must be paired with end.
  * @param {string} [opts.lastModEndDate]   ISO-8601. Max 120 days from start.
+ * @param {boolean} [opts.hasKev]          Restrict to CVEs in the CISA KEV
+ *                                         catalogue (~1,700 records, so one
+ *                                         page covers the whole set).
  * @param {string} [opts.apiKey]          Optional NVD API key.
  */
-async function fetchNvd({ startIndex = 0, lastModStartDate, lastModEndDate, apiKey } = {}) {
+async function fetchNvd({ startIndex = 0, lastModStartDate, lastModEndDate, hasKev = false, apiKey } = {}) {
     const params = new URLSearchParams({
         resultsPerPage: String(RESULTS_PER_PAGE),
         startIndex: String(startIndex),
@@ -34,6 +37,11 @@ async function fetchNvd({ startIndex = 0, lastModStartDate, lastModEndDate, apiK
         params.set('lastModEndDate', lastModEndDate);
     }
 
+    // A valueless flag; NVD accepts `hasKev` and `hasKev=` alike.
+    if (hasKev) {
+        params.set('hasKev', '');
+    }
+
     const url = `${NVD_API_URL}?${params.toString()}`;
     const key = apiKey !== undefined ? apiKey : process.env.NVD_API_KEY || '';
 
@@ -42,7 +50,8 @@ async function fetchNvd({ startIndex = 0, lastModStartDate, lastModEndDate, apiK
     const headers = { Accept: 'application/json' };
     if (key) headers.apiKey = key;
 
-    console.log(`[NVD] Fetching startIndex=${startIndex}${lastModStartDate ? ` window=${lastModStartDate}..${lastModEndDate}` : ''}`);
+    const scope = hasKev ? ' scope=kev' : (lastModStartDate ? ` window=${lastModStartDate}..${lastModEndDate}` : '');
+    console.log(`[NVD] Fetching startIndex=${startIndex}${scope}`);
 
     let attempt = 0;
     for (;;) {

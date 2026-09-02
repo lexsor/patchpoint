@@ -3,6 +3,7 @@ const router = express.Router();
 const repository = require('../models/repository');
 const { fetchAllSources, getFetchStatus, SOURCE_CISA, SOURCE_NVD, SOURCE_MITRE } = require('../models/fetcher-orchestrator');
 const { getAlerts, getAlertCount, clearAlerts } = require('../models/alert-engine');
+const { SEVERITY_LEVELS } = require('../lib/severity');
 
 const DEFAULT_PER_PAGE = 25;
 const MAX_PER_PAGE = 200;
@@ -103,17 +104,19 @@ router.get('/sources', async (req, res) => {
 // GET /api/filter-options - Get available filter values
 router.get('/filter-options', async (req, res) => {
     try {
-        const [severities, vendors, techTypes] = await Promise.all([
-            repository.getSeverities(),
+        const [vendors, techTypes] = await Promise.all([
             repository.getVendors(),
             repository.getTechTypes(),
         ]);
 
         res.json({
-            severities,
+            // Severity and source are closed vocabularies, so they are served
+            // as constants. Vendor and technology genuinely depend on what has
+            // been ingested, so those stay data-derived.
+            severities: SEVERITY_LEVELS,
+            sources: [SOURCE_CISA, SOURCE_NVD, SOURCE_MITRE],
             vendors,
             techTypes,
-            sources: [SOURCE_CISA, SOURCE_NVD, SOURCE_MITRE],
         });
     } catch (err) {
         console.error('Error fetching filter options:', err.message);

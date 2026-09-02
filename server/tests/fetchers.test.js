@@ -41,9 +41,19 @@ describe('CISA KEV fetcher', () => {
             description: 'Remote code execution in Jira',
             kev_flag: true,
             kev_date_added: '2024-06-20',
-            severity: 'HIGH',
         });
         expect(result.records[0].cwes).toEqual(['CWE-94', 'CWE-502']);
+    });
+
+    test('asserts no severity of its own', async () => {
+        httpGetText.mockResolvedValue(ok(CSV));
+
+        const result = await fetchCisaKev();
+
+        // CISA publishes no CVSS score. Stamping every KEV record HIGH made
+        // HIGH the only severity in the table, because KEV lands first and is
+        // ~1,700 records; the severity filter then had one option.
+        expect(result.records.every(r => r.severity === '')).toBe(true);
     });
 
     test('does not invent a published_date from the KEV catalogue date', async () => {
@@ -215,6 +225,26 @@ describe('NVD fetcher', () => {
         const [url, options] = httpGetText.mock.calls[0];
         expect(url).not.toContain('secret-key');
         expect(options.headers.apiKey).toBe('secret-key');
+    });
+
+    test('sends the hasKev flag when asked', async () => {
+        // One paged hasKev query scores the whole CISA KEV catalogue (~1,700
+        // CVEs). Without it those records carry no severity, because CISA
+        // publishes no CVSS.
+        httpGetText.mockResolvedValue(ok(JSON.stringify(NVD_PAGE)));
+
+        await fetchNvd({ startIndex: 0, hasKev: true });
+
+        const [url] = httpGetText.mock.calls[0];
+        expect(url).toContain('hasKev');
+    });
+
+    test('omits hasKev by default', async () => {
+        httpGetText.mockResolvedValue(ok(JSON.stringify(NVD_PAGE)));
+
+        await fetchNvd({ startIndex: 0 });
+
+        expect(httpGetText.mock.calls[0][0]).not.toContain('hasKev');
     });
 
     test('passes the modification window through when both bounds are given', async () => {

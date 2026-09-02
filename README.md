@@ -7,7 +7,7 @@ A self-hosted security monitoring dashboard that consolidates CVE vulnerability 
 Patchpoint (patch/vulnerability + point/one-stop) aggregates vulnerabilities from:
 
 - **CISA KEV** (Known Exploited Vulnerabilities Catalog) — CSV feed, with the JSON feed as a fallback
-- **NIST NVD** (National Vulnerability Database) — API v2.0, polled over a rolling modification window
+- **NIST NVD** (National Vulnerability Database) — API v2.0, in two sweeps: a `hasKev` pass that scores the whole CISA KEV catalogue, then a rolling modification window
 - **MITRE CVE Services** — per-CVE enrichment (MITRE has no bulk listing endpoint, so each cycle enriches a bounded batch of CVEs discovered by the other two sources)
 
 All data is deduplicated by CVE ID, merged into unified records with source labels, and stored in PostgreSQL for querying and filtering.
@@ -74,6 +74,20 @@ cp .env.example .env
 | `MITRE_ENRICH_LIMIT` | `25` | CVEs enriched via MITRE per cycle |
 | `POLL_INTERVAL_HOURS` | `6` | Automatic fetch interval |
 
+### Severity
+
+CISA KEV publishes no CVSS score, so it asserts no severity — `kev_flag` is what
+records exploitation. Severities come from NVD and MITRE, and the KEV sweep runs
+every cycle so KEV records are scored rather than left blank. The severity filter
+offers the full CVSS vocabulary (CRITICAL / HIGH / MEDIUM / LOW) regardless of
+what has been ingested; vendor and technology options are data-derived.
+
+### Theme
+
+Dark by default. Every colour is a CSS custom property on `:root` in
+[`client/src/styles.css`](client/src/styles.css), so a light theme means
+redefining those tokens rather than editing rules.
+
 ## Architecture
 
 ```
@@ -133,9 +147,10 @@ cp .env.example .env
 4. **Refresh button:** Click "Refresh Data" — new data appears in the table
 5. **Filters:** Filter by severity (CRITICAL), source (CISA KEV), vendor
 6. **Search:** Search for a CVE ID you can see in the table — should narrow to that record
-7. **Sorting:** Click the CVSS header twice — the arrow flips and the order actually reverses
-8. **Count endpoint:** `curl http://localhost:3001/api/vulnerabilities/count` — returns a count, not a 404
-9. **Watchlist:** Add a vendor watchlist entry, trigger a fetch, verify an alert appears; trigger a second fetch and verify it is **not** duplicated
+7. **Severity filter:** The dropdown lists all four levels, and each returns rows
+8. **Sorting:** Click the CVSS header twice — the arrow flips and the order actually reverses
+9. **Count endpoint:** `curl http://localhost:3001/api/vulnerabilities/count` — returns a count, not a 404
+10. **Watchlist:** Add a vendor watchlist entry, trigger a fetch, verify an alert appears; trigger a second fetch and verify it is **not** duplicated
 
 ## Project Structure
 

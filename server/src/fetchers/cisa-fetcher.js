@@ -5,13 +5,6 @@ const CSV_URL = 'https://www.cisa.gov/sites/default/files/csv/known_exploited_vu
 const JSON_URL = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json';
 const REQUEST_TIMEOUT_MS = 30000;
 
-/**
- * CISA KEV asserts a CVE is being exploited in the wild but publishes no CVSS
- * score. HIGH is the floor we record; if NVD or MITRE later supplies a real
- * score, the deduplication merge raises the severity to match.
- */
-const KEV_ASSUMED_SEVERITY = 'HIGH';
-
 /** Fetch the CISA KEV catalog (CSV feed). */
 async function fetchCisaKev() {
     console.log(`[CISA KEV] Fetching ${CSV_URL}`);
@@ -78,7 +71,12 @@ function toRecord(item) {
         kev_flag: true,
         kev_date_added: dateAdded,
         cwes: parseCwes(item.cwes),
-        severity: KEV_ASSUMED_SEVERITY,
+        // CISA KEV publishes no CVSS score, so it asserts no severity. An
+        // earlier version stamped every KEV record HIGH; since KEV lands
+        // first and is ~1,700 records, that made HIGH the only value in the
+        // table and the only option in the severity filter. Exploitation is
+        // conveyed by kev_flag; severity is left for NVD/MITRE to supply.
+        severity: '',
     };
 }
 

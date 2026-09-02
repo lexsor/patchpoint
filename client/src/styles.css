@@ -1,3 +1,80 @@
+/*
+ * Patchpoint theme.
+ *
+ * Dark by default. Every colour is a token on :root so the palette lives in
+ * one place; adding a light theme later means redefining these tokens under a
+ * [data-theme="light"] selector, not editing rules.
+ */
+:root {
+  /* `color-scheme` is what makes native widgets dark: <select> popups,
+     <input type="date"> pickers, scrollbars and focus rings. Without it those
+     stay light and punch holes in the theme. */
+  color-scheme: dark;
+
+  /* Surfaces, back to front */
+  --bg-page: #0b1220;
+  --bg-surface: #151d2e;
+  --bg-raised: #1c2537;
+  --bg-inset: #111a2b;
+
+  /* Lines */
+  --border: #2a3547;
+  --border-strong: #3a4759;
+  --border-subtle: #202b3d;
+
+  /* Text */
+  --text: #e2e8f0;
+  --text-heading: #f1f5f9;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+
+  /* Accent */
+  --accent: #60a5fa;
+  --accent-hover: #3b82f6;
+  --accent-contrast: #0b1220;
+  --accent-disabled: #334155;
+
+  /* Severity badges: tinted fill, bright text, matching hairline */
+  --sev-critical-bg: rgba(220, 38, 38, 0.16);
+  --sev-critical-fg: #fca5a5;
+  --sev-critical-br: rgba(220, 38, 38, 0.45);
+  --sev-high-bg: rgba(234, 88, 12, 0.16);
+  --sev-high-fg: #fdba74;
+  --sev-high-br: rgba(234, 88, 12, 0.45);
+  --sev-medium-bg: rgba(202, 138, 4, 0.16);
+  --sev-medium-fg: #fde047;
+  --sev-medium-br: rgba(202, 138, 4, 0.45);
+  --sev-low-bg: rgba(22, 163, 74, 0.16);
+  --sev-low-fg: #86efac;
+  --sev-low-br: rgba(22, 163, 74, 0.45);
+  --sev-unknown-bg: rgba(100, 116, 139, 0.18);
+  --sev-unknown-fg: #cbd5e1;
+  --sev-unknown-br: rgba(100, 116, 139, 0.45);
+
+  /* Source tags */
+  --src-cisa-bg: rgba(59, 130, 246, 0.18);
+  --src-cisa-fg: #93c5fd;
+  --src-nvd-bg: rgba(16, 185, 129, 0.18);
+  --src-nvd-fg: #6ee7b7;
+  --src-mitre-bg: rgba(236, 72, 153, 0.18);
+  --src-mitre-fg: #f9a8d4;
+  --src-other-bg: rgba(100, 116, 139, 0.18);
+  --src-other-fg: #cbd5e1;
+
+  /* Notices */
+  --warn-bg: rgba(245, 158, 11, 0.12);
+  --warn-br: rgba(245, 158, 11, 0.42);
+  --warn-fg: #fcd34d;
+  --warn-fg-dim: #fbbf24;
+  --error-bg: rgba(220, 38, 38, 0.12);
+  --error-br: rgba(220, 38, 38, 0.42);
+  --error-fg: #fca5a5;
+
+  --code-fg: #93c5fd;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --font-mono: 'SF Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -6,9 +83,10 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  background: #f8fafc;
-  color: #1e293b;
+  background: var(--bg-page);
+  color: var(--text);
   line-height: 1.5;
+  min-height: 100vh;
 }
 
 .dashboard {
@@ -23,19 +101,19 @@ body {
   align-items: center;
   margin-bottom: 20px;
   padding-bottom: 16px;
-  border-bottom: 2px solid #e2e8f0;
+  border-bottom: 2px solid var(--border);
 }
 
 .header h1 {
   font-size: 1.75rem;
   font-weight: 700;
-  color: #0f172a;
+  color: var(--text-heading);
 }
 
 .refresh-btn {
   padding: 8px 20px;
-  background: #3b82f6;
-  color: white;
+  background: var(--accent);
+  color: var(--accent-contrast);
   border: none;
   border-radius: 6px;
   font-size: 0.9rem;
@@ -44,18 +122,19 @@ body {
   transition: background 0.2s;
 }
 
-.refresh-btn:hover {
-  background: #2563eb;
+.refresh-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
 }
 
 .refresh-btn:disabled {
-  background: #94a3b8;
+  background: var(--accent-disabled);
+  color: var(--text-dim);
   cursor: not-allowed;
 }
 
 .alert-banner {
-  background: #fef3c7;
-  border: 1px solid #f59e0b;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-br);
   border-radius: 8px;
   padding: 12px 16px;
   margin-bottom: 16px;
@@ -75,13 +154,26 @@ body {
 
 .alert-banner .alert-title {
   font-weight: 700;
-  color: #92400e;
+  color: var(--warn-fg);
   margin-bottom: 4px;
 }
 
 .alert-banner .alert-message {
-  color: #a16207;
+  color: var(--warn-fg-dim);
   font-size: 0.9rem;
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: 6px;
+  background: var(--error-bg);
+  color: var(--error-fg);
+  border: 1px solid var(--error-br);
+  font-size: 0.875rem;
 }
 
 .stats-bar {
@@ -91,10 +183,11 @@ body {
 }
 
 .stat-card {
-  background: white;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: 16px 20px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow);
   flex: 1;
   text-align: center;
 }
@@ -102,12 +195,12 @@ body {
 .stat-card .stat-value {
   font-size: 1.75rem;
   font-weight: 700;
-  color: #3b82f6;
+  color: var(--accent);
 }
 
 .stat-card .stat-label {
   font-size: 0.8rem;
-  color: #64748b;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-top: 4px;
@@ -120,28 +213,35 @@ body {
 .search-bar input {
   width: 100%;
   padding: 10px 16px;
-  border: 2px solid #e2e8f0;
+  border: 2px solid var(--border);
   border-radius: 8px;
   font-size: 1rem;
+  background: var(--bg-surface);
+  color: var(--text);
   transition: border-color 0.2s;
+}
+
+.search-bar input::placeholder {
+  color: var(--text-dim);
 }
 
 .search-bar input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--accent);
 }
 
 .filters-panel {
-  background: white;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: 16px 20px;
   margin-bottom: 16px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow);
 }
 
 .filters-panel h3 {
   font-size: 0.9rem;
-  color: #64748b;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-bottom: 12px;
@@ -162,7 +262,7 @@ body {
 
 .filter-group label {
   font-size: 0.75rem;
-  color: #94a3b8;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -170,24 +270,26 @@ body {
 .filter-group select,
 .filter-group input {
   padding: 6px 10px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.85rem;
-  background: #f8fafc;
+  background: var(--bg-inset);
+  color: var(--text);
   min-width: 140px;
 }
 
 .filter-group select:focus,
 .filter-group input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--accent);
 }
 
 .vulnerability-table-wrapper {
-  background: white;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  overflow: hidden;
+  box-shadow: var(--shadow);
+  overflow-x: auto;
 }
 
 .vulnerability-table {
@@ -196,7 +298,7 @@ body {
 }
 
 .vulnerability-table thead {
-  background: #f1f5f9;
+  background: var(--bg-raised);
 }
 
 .vulnerability-table th {
@@ -205,7 +307,7 @@ body {
   font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #64748b;
+  color: var(--text-muted);
   font-weight: 600;
   cursor: pointer;
   user-select: none;
@@ -213,7 +315,7 @@ body {
 }
 
 .vulnerability-table th:hover {
-  background: #e2e8f0;
+  background: var(--border);
 }
 
 .vulnerability-table th .sort-arrow {
@@ -221,25 +323,29 @@ body {
   opacity: 0.5;
 }
 
+.vulnerability-table th.sorted {
+  color: var(--text);
+}
+
 .vulnerability-table th.sorted .sort-arrow {
   opacity: 1;
-  color: #3b82f6;
+  color: var(--accent);
 }
 
 .vulnerability-table td {
   padding: 12px 16px;
-  border-top: 1px solid #f1f5f9;
+  border-top: 1px solid var(--border-subtle);
   font-size: 0.9rem;
 }
 
 .vulnerability-table tbody tr:hover {
-  background: #f8fafc;
+  background: var(--bg-raised);
 }
 
 .cve-id {
   font-weight: 600;
-  color: #1e40af;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: var(--code-fg);
+  font-family: var(--font-mono);
   font-size: 0.85rem;
 }
 
@@ -253,51 +359,33 @@ body {
 }
 
 .severity-critical {
-  background: #fef2f2;
-  color: #dc2626;
-  border: 1px solid #fecaca;
+  background: var(--sev-critical-bg);
+  color: var(--sev-critical-fg);
+  border: 1px solid var(--sev-critical-br);
 }
 
 .severity-high {
-  background: #fff7ed;
-  color: #ea580c;
-  border: 1px solid #fed7aa;
+  background: var(--sev-high-bg);
+  color: var(--sev-high-fg);
+  border: 1px solid var(--sev-high-br);
 }
 
 .severity-medium {
-  background: #fefce8;
-  color: #ca8a04;
-  border: 1px solid #fef08a;
+  background: var(--sev-medium-bg);
+  color: var(--sev-medium-fg);
+  border: 1px solid var(--sev-medium-br);
 }
 
 .severity-low {
-  background: #f0fdf4;
-  color: #16a34a;
-  border: 1px solid #bbf7d0;
+  background: var(--sev-low-bg);
+  color: var(--sev-low-fg);
+  border: 1px solid var(--sev-low-br);
 }
 
 .severity-unknown {
-  background: #f1f5f9;
-  color: #475569;
-  border: 1px solid #cbd5e1;
-}
-
-.source-other {
-  background: #f1f5f9;
-  color: #475569;
-}
-
-.error-banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  margin-bottom: 16px;
-  border-radius: 6px;
-  background: #fef2f2;
-  color: #b91c1c;
-  border: 1px solid #fecaca;
-  font-size: 0.875rem;
+  background: var(--sev-unknown-bg);
+  color: var(--sev-unknown-fg);
+  border: 1px solid var(--sev-unknown-br);
 }
 
 .source-labels {
@@ -315,18 +403,23 @@ body {
 }
 
 .source-cisa {
-  background: #dbeafe;
-  color: #1d4ed8;
+  background: var(--src-cisa-bg);
+  color: var(--src-cisa-fg);
 }
 
 .source-nvd {
-  background: #d1fae5;
-  color: #047857;
+  background: var(--src-nvd-bg);
+  color: var(--src-nvd-fg);
 }
 
 .source-mitre {
-  background: #fce7f3;
-  color: #be185d;
+  background: var(--src-mitre-bg);
+  color: var(--src-mitre-fg);
+}
+
+.source-other {
+  background: var(--src-other-bg);
+  color: var(--src-other-fg);
 }
 
 .kev-badge {
@@ -335,9 +428,9 @@ body {
   border-radius: 3px;
   font-size: 0.7rem;
   font-weight: 700;
-  background: #fef2f2;
-  color: #dc2626;
-  border: 1px solid #fecaca;
+  background: var(--sev-critical-bg);
+  color: var(--sev-critical-fg);
+  border: 1px solid var(--sev-critical-br);
 }
 
 .description-cell {
@@ -345,11 +438,11 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #475569;
+  color: var(--text-muted);
 }
 
 .cvss-score {
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-weight: 700;
 }
 
@@ -359,13 +452,14 @@ body {
   align-items: center;
   gap: 16px;
   padding: 16px;
-  border-top: 1px solid #f1f5f9;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .pagination button {
   padding: 6px 14px;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.85rem;
   cursor: pointer;
@@ -373,23 +467,24 @@ body {
 }
 
 .pagination button:hover:not(:disabled) {
-  background: #e2e8f0;
+  background: var(--border);
+  border-color: var(--border-strong);
 }
 
 .pagination button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 .pagination .page-info {
   font-size: 0.85rem;
-  color: #64748b;
+  color: var(--text-muted);
 }
 
 .loading {
   text-align: center;
   padding: 40px;
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 1rem;
 }
 
@@ -397,8 +492,8 @@ body {
   display: inline-block;
   width: 24px;
   height: 24px;
-  border: 3px solid #e2e8f0;
-  border-top-color: #3b82f6;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   margin-bottom: 8px;
@@ -408,38 +503,61 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* Respect a reduced-motion preference rather than spinning regardless. */
+@media (prefers-reduced-motion: reduce) {
+  .loading .spinner {
+    animation-duration: 2.4s;
+  }
+
+  .refresh-btn,
+  .pagination button,
+  .search-bar input,
+  .filter-group select,
+  .filter-group input {
+    transition: none;
+  }
+}
+
 .clear-filters-btn {
   padding: 6px 12px;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.8rem;
-  color: #64748b;
+  color: var(--text-muted);
   cursor: pointer;
   margin-top: 8px;
 }
 
 .clear-filters-btn:hover {
-  background: #e2e8f0;
+  background: var(--border);
+  color: var(--text);
 }
 
 @media (max-width: 768px) {
   .dashboard {
     padding: 10px;
   }
-  
+
   .stats-bar {
     flex-direction: column;
   }
-  
+
   .filters-row {
     flex-direction: column;
+    align-items: stretch;
   }
-  
+
+  .filter-group select,
+  .filter-group input {
+    min-width: 0;
+    width: 100%;
+  }
+
   .vulnerability-table {
     font-size: 0.8rem;
   }
-  
+
   .vulnerability-table th,
   .vulnerability-table td {
     padding: 8px;

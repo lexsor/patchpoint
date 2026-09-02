@@ -31,7 +31,6 @@ beforeEach(() => {
     repository.getCount.mockResolvedValue(42);
     repository.getById.mockResolvedValue(null);
     repository.getSources.mockResolvedValue([]);
-    repository.getSeverities.mockResolvedValue(['CRITICAL']);
     repository.getVendors.mockResolvedValue(['Atlassian']);
     repository.getTechTypes.mockResolvedValue(['web']);
     alertEngine.getAlerts.mockResolvedValue([]);
@@ -182,7 +181,21 @@ describe('GET /api/filter-options', () => {
 
         expect(res.status).toBe(200);
         expect(res.body.sources).toEqual(['CISA KEV', 'NVD', 'MITRE CVEW']);
-        expect(res.body.severities).toEqual(['CRITICAL']);
+    });
+
+    test('offers every severity level, not just the ones already ingested', async () => {
+        // Built from a constant rather than SELECT DISTINCT. Deriving it from
+        // stored data meant the dropdown only offered HIGH.
+        const res = await request(makeApp()).get('/api/filter-options');
+
+        expect(res.body.severities).toEqual(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']);
+    });
+
+    test('vendor and technology stay data-derived', async () => {
+        const res = await request(makeApp()).get('/api/filter-options');
+
+        expect(res.body.vendors).toEqual(['Atlassian']);
+        expect(res.body.techTypes).toEqual(['web']);
     });
 });
 
