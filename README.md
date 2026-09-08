@@ -119,9 +119,32 @@ is why the bindings above matter rather than relying on the firewall.
   backward scan of a `DESC NULLS LAST` index yields `ASC NULLS FIRST`, so
   covering both would need two indexes per sortable column, and the write cost
   on a bulk-upserted table outweighs it.
+- **Smaller client.** The API client uses the platform `fetch` instead of
+  axios, which was the largest non-React dependency: the bundle went from
+  204.9 KB to 155.0 KB raw, 68.6 KB to 50.0 KB gzipped (27% off the wire).
+- **Filter options are cached.** The vendor and technology dropdown lists are
+  `SELECT DISTINCT` over the whole table and were re-run on every page load.
+  They are cached in process, invalidated when a fetch cycle stores records
+  (the only thing that can change them), with a 5-minute TTL as a backstop.
+- **The table is not remounted on every interaction.** It used to be replaced
+  by a spinner on each sort, filter and page change, tearing down and
+  rebuilding every row and losing scroll position. It now stays mounted and is
+  marked `aria-busy` while a reload is in flight; the full-page spinner is
+  reserved for the first load, when there is nothing to keep.
 - **`pg_trgm` is optional.** Creating the extension needs elevated rights; if
   the database role cannot, the schema logs a notice and search falls back to
   sequential scans rather than failing to boot.
+
+### Known limitation: deep pagination
+
+Paging uses `LIMIT/OFFSET`, so PostgreSQL fetches and discards every row
+before the offset — page 500 discards 12,475 rows. Keyset pagination would fix
+it, but the sort is user-selectable across seven columns with `NULLS LAST`
+handling, so a correct keyset predicate would need per-column NULL-aware
+comparisons, and the UI navigates strictly with Prev/Next anyway. Given that
+filters and search are how you actually locate a CVE, this was left as-is
+rather than absorbing that complexity. Narrow with a filter instead of paging
+into the tens of thousands.
 
 ### API change
 

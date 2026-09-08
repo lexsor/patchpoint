@@ -17,6 +17,18 @@ const UPSERT_CHUNK_SIZE = 400;
 const SELECT_COLUMNS = UPSERT_COLUMNS.join(', ');
 
 /**
+ * Cached vendor/technology lists for the filter dropdowns.
+ *
+ * Both are `SELECT DISTINCT ... ORDER BY` over the whole table, and
+ * /api/filter-options is called on every page load and after every manual
+ * refresh. The values only change when a fetch cycle stores new records, so
+ * the orchestrator invalidates this explicitly; the TTL is a safety net in
+ * case an invalidation is ever missed.
+ */
+const FILTER_OPTIONS_TTL_MS = 5 * 60 * 1000;
+let filterOptionsCache = null;
+
+/**
  * Non-empty text from the incoming row wins; otherwise the stored value is
  * kept. Guards against a source that reports a field as '' rather than NULL
  * wiping data another source already supplied.
@@ -312,6 +324,26 @@ class VulnerabilityRepository {
 
     async getSources() {
         return (await getDb().query('SELECT * FROM sources ORDER BY last_fetched DESC NULLS LAST')).rows;
+    }
+
+    /**
+     * Vendor and technology lists, cached. Returns both together because they
+     * share a cache entry and are always requested together.
+     */
+    async getFilterOptions() {
+        if (filterOptionsCache && Date.now() - filterOptionsCache.at < FILTER_OPTIONS_TTL_MS) {
+            return filterOptionsCache.value;
+        }
+
+        const [vendors, techTypes] = await Promise.all([this.getVendors(), this.getTechTypes()]);
+        const value = { vendors, techTypes };
+        filterOptionsCache = { at: Date.now(), value };
+        return value;
+    }
+
+    /** Called after records are stored, since that is what can change them. */
+    invalidateFilterOptions() {
+        filterOptionsCache = null;
     }
 
     async getVendors() {

@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS vulnerabilities (
 
 -- Equality / range filters.
 CREATE INDEX IF NOT EXISTS idx_vuln_severity ON vulnerabilities(severity);
+-- Ordered access to vendor: the DISTINCT list behind the vendor filter, and
+-- `sortBy=vendor`. The trigram index below cannot do either.
+CREATE INDEX IF NOT EXISTS idx_vuln_vendor ON vulnerabilities(vendor);
 CREATE INDEX IF NOT EXISTS idx_vuln_kev ON vulnerabilities(kev_flag);
 CREATE INDEX IF NOT EXISTS idx_vuln_tech_type ON vulnerabilities(tech_type);
 CREATE INDEX IF NOT EXISTS idx_vuln_updated ON vulnerabilities(updated_at);
@@ -160,5 +163,9 @@ END $$;
 -- corresponding composite.
 DROP INDEX IF EXISTS idx_vuln_published;
 DROP INDEX IF EXISTS idx_vuln_cvss;
--- Superseded by the trigram index, which serves both `= 'x'` and `ILIKE '%x%'`.
-DROP INDEX IF EXISTS idx_vuln_vendor;
+-- NOTE: idx_vuln_vendor is deliberately NOT dropped. A trigram GIN index
+-- serves `ILIKE '%x%'` but is an unordered inverted index: it cannot produce
+-- sorted output, so it does nothing for `sortBy=vendor` or for the
+-- `SELECT DISTINCT vendor ... ORDER BY vendor` that /api/filter-options runs on
+-- every page load. The btree and the GIN index are complementary, not
+-- redundant.

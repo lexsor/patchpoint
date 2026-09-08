@@ -399,6 +399,29 @@ body {
   border-collapse: collapse;
 }
 
+/* A reload with rows already on screen: dim rather than unmount, so the DOM
+   is not rebuilt and the scroll position survives.
+   The transition lives on the base selector, not on .is-refreshing — declared
+   only in the target state it does not apply on the way in. */
+.vulnerability-table-wrapper {
+  transition: opacity 0.15s ease-in;
+}
+
+.vulnerability-table-wrapper.is-refreshing {
+  opacity: 0.55;
+}
+
+.vulnerability-table-wrapper.is-refreshing .vulnerability-table {
+  /* Stale rows must not be clickable while the replacement is in flight. */
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vulnerability-table-wrapper {
+    transition: none;
+  }
+}
+
 .vulnerability-table thead {
   background: var(--bg-raised);
 }

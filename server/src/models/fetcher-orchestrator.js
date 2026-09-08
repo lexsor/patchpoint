@@ -88,6 +88,10 @@ async function fetchAllSources() {
         results[SOURCE_NVD] = await runSource(SOURCE_NVD, fetchNvdSource);
         results[SOURCE_MITRE] = await runSource(SOURCE_MITRE, fetchMitreSource);
 
+        // New records can introduce new vendors or technology types, so drop
+        // the cached dropdown lists before anything reads them again.
+        repository.invalidateFilterOptions();
+
         try {
             const alerts = await alertEngine.run();
             results.alerts = alerts.length;

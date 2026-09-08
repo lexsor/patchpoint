@@ -1,72 +1,127 @@
-import axios from 'axios';
+/**
+ * API client.
+ *
+ * Uses the platform `fetch` rather than a library: there are a dozen simple
+ * same-origin JSON calls here, and axios was the single largest non-React
+ * dependency in the bundle for that.
+ */
 
 // Same-origin by default: in dev Vite proxies /api to the backend, in
 // production nginx does. VITE_API_BASE overrides it for a split deployment.
-const client = axios.create({
-    baseURL: import.meta.env.VITE_API_BASE || '',
-    timeout: 30000,
-});
+const BASE = import.meta.env.VITE_API_BASE || '';
 
-// A full fetch cycle walks several upstream APIs and can outlive the default
-// timeout, so this one call gets a longer budget.
-const FETCH_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 30000;
+// A full fetch cycle walks several upstream APIs and can outlive the default.
+const FETCH_CYCLE_TIMEOUT_MS = 15 * 60 * 1000;
 
-export async function getVulnerabilities(params = {}) {
-    const response = await client.get('/api/vulnerabilities', { params });
-    return response.data;
+/** Error carrying the HTTP status, so callers can branch on it. */
+class ApiError extends Error {
+    constructor(message, status, body) {
+        super(message);
+        this.name = 'ApiError';
+        this.status = status;
+        this.body = body;
+    }
 }
 
-export async function getVulnerability(cveId) {
-    const response = await client.get(`/api/vulnerabilities/${encodeURIComponent(cveId)}`);
-    return response.data;
+function withQuery(path, params) {
+    if (!params) return path;
+
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+        // Skip empties so an unset filter does not become `?vendor=`.
+        if (value === undefined || value === null || value === '') continue;
+        search.append(key, String(value));
+    }
+
+    const qs = search.toString();
+    return qs ? `${path}?${qs}` : path;
 }
 
-export async function getVulnerabilityCount() {
-    const response = await client.get('/api/vulnerabilities/count');
-    return response.data;
+async function requestJson(path, { method = 'GET', params, body, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+    const options = {
+        method,
+        headers: { Accept: 'application/json' },
+        // AbortSignal.timeout is supported by every browser that runs the
+        // rest of this bundle.
+        signal: AbortSignal.timeout(timeoutMs),
+    };
+
+    if (body !== undefined) {
+        options.headers['Content-Type'] = 'application/json';
+        options.body = JSON.stringify(body);
+    }
+
+    let response;
+    try {
+        response = await fetch(BASE + withQuery(path, params), options);
+    } catch (err) {
+        // A timeout arrives as an AbortError; everything else is a transport
+        // failure. Neither has a status.
+        const reason = err.name === 'TimeoutError' || err.name === 'AbortError'
+            ? 'Request timed out'
+            : 'Network request failed';
+        throw new ApiError(reason, 0, null);
+    }
+
+    // 204 and other empty bodies must not go through response.json().
+    const isJson = (response.headers.get('content-type') || '').includes('application/json');
+    const payload = isJson ? await response.json().catch(() => null) : null;
+
+    if (!response.ok) {
+        const message = (payload && payload.error) || `Request failed with status ${response.status}`;
+        throw new ApiError(message, response.status, payload);
+    }
+
+    return payload;
 }
 
-export async function getFilterOptions() {
-    const response = await client.get('/api/filter-options');
-    return response.data;
+export function getVulnerabilities(params = {}) {
+    return requestJson('/api/vulnerabilities', { params });
 }
 
-export async function getSources() {
-    const response = await client.get('/api/sources');
-    return response.data;
+export function getVulnerability(cveId) {
+    return requestJson(`/api/vulnerabilities/${encodeURIComponent(cveId)}`);
 }
 
-export async function triggerFetch() {
-    const response = await client.post('/api/fetch', null, { timeout: FETCH_TIMEOUT_MS });
-    return response.data;
+export function getVulnerabilityCount() {
+    return requestJson('/api/vulnerabilities/count');
 }
 
-export async function getFetchStatus() {
-    const response = await client.get('/api/fetch/status');
-    return response.data;
+export function getFilterOptions() {
+    return requestJson('/api/filter-options');
 }
 
-export async function getAlerts(limit = 50) {
-    const response = await client.get('/api/alerts', { params: { limit } });
-    return response.data;
+export function getSources() {
+    return requestJson('/api/sources');
 }
 
-export async function clearAlerts() {
-    const response = await client.delete('/api/alerts');
-    return response.data;
+export function triggerFetch() {
+    return requestJson('/api/fetch', { method: 'POST', timeoutMs: FETCH_CYCLE_TIMEOUT_MS });
 }
 
-export async function getWatchlist() {
-    const response = await client.get('/api/watchlist');
-    return response.data;
+export function getFetchStatus() {
+    return requestJson('/api/fetch/status');
 }
 
-export async function addWatchlistItem(item, itemType) {
-    const response = await client.post('/api/watchlist', { item, itemType });
-    return response.data;
+export function getAlerts(limit = 50) {
+    return requestJson('/api/alerts', { params: { limit } });
 }
 
-export async function removeWatchlistItem(id) {
-    const response = await client.delete(`/api/watchlist/${encodeURIComponent(id)}`);
-    return response.data;
+export function clearAlerts() {
+    return requestJson('/api/alerts', { method: 'DELETE' });
 }
+
+export function getWatchlist() {
+    return requestJson('/api/watchlist');
+}
+
+export function addWatchlistItem(item, itemType) {
+    return requestJson('/api/watchlist', { method: 'POST', body: { item, itemType } });
+}
+
+export function removeWatchlistItem(id) {
+    return requestJson(`/api/watchlist/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export { ApiError };

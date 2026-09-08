@@ -373,3 +373,33 @@ describe('query performance shape', () => {
         expect(JSON.parse(bound)).toEqual(['CISA KEV', 'NVD']);
     });
 });
+
+
+describe('filter option caching', () => {
+    test('queries once, then serves from cache', async () => {
+        // /api/filter-options is hit on every page load and each of these is a
+        // DISTINCT over the whole table.
+        const db = fakeDb([storedRow()]);
+        repository.invalidateFilterOptions();
+
+        await repository.getFilterOptions();
+        const afterFirst = db.statements.filter((s) => /SELECT DISTINCT/i.test(s.sql)).length;
+        await repository.getFilterOptions();
+        await repository.getFilterOptions();
+        const afterThird = db.statements.filter((s) => /SELECT DISTINCT/i.test(s.sql)).length;
+
+        expect(afterFirst).toBe(2); // vendors + techTypes
+        expect(afterThird).toBe(2); // no further queries
+    });
+
+    test('re-queries after invalidation', async () => {
+        const db = fakeDb([storedRow()]);
+        repository.invalidateFilterOptions();
+
+        await repository.getFilterOptions();
+        repository.invalidateFilterOptions();
+        await repository.getFilterOptions();
+
+        expect(db.statements.filter((s) => /SELECT DISTINCT/i.test(s.sql))).toHaveLength(4);
+    });
+});

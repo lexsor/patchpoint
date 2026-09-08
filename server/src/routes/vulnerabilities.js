@@ -104,10 +104,7 @@ router.get('/sources', async (req, res) => {
 // GET /api/filter-options - Get available filter values
 router.get('/filter-options', async (req, res) => {
     try {
-        const [vendors, techTypes] = await Promise.all([
-            repository.getVendors(),
-            repository.getTechTypes(),
-        ]);
+        const { vendors, techTypes } = await repository.getFilterOptions();
 
         res.json({
             // Severity and source are closed vocabularies, so they are served

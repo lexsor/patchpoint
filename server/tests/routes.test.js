@@ -33,6 +33,8 @@ beforeEach(() => {
     repository.getSources.mockResolvedValue([]);
     repository.getVendors.mockResolvedValue(['Atlassian']);
     repository.getTechTypes.mockResolvedValue(['web']);
+    // The route reads the cached accessor rather than the two queries.
+    repository.getFilterOptions.mockResolvedValue({ vendors: ['Atlassian'], techTypes: ['web'] });
     alertEngine.getAlerts.mockResolvedValue([]);
     alertEngine.getAlertCount.mockResolvedValue(0);
     alertEngine.clearAlerts.mockResolvedValue(3);
