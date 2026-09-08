@@ -1,6 +1,7 @@
 # Design note: showing what fixes a CVE
 
-Status: **investigated, not implemented.** Prepared for a future session.
+Status: **investigated, not implemented.** Plan of record for the fix-action
+feature.
 
 ## The ask
 
@@ -9,14 +10,44 @@ what to update to. The motivating example was: *"the CVE for Android 15 RCE is
 fixed if you update to Android 16 security patch March"* — surfaced as a column
 or a separate page so the fix action is obvious.
 
+Follow-up decision, recorded verbatim: *"I want it to give the Android version
+and monthly patch level to rule out 365 days worth of questions."* Both are
+required.
+
+## CORRECTION to the first draft of this note
+
+The first draft claimed **55% of Android CVEs carry an exact fix version from
+NVD**. That number was real but measured the wrong thing, and the error was
+load-bearing — it put the Android bulletin source last in the order of work, as
+a granularity nicety.
+
+The 55% was "share of CVEs *matching an Android CPE query* that carry a
+`versionEndExcluding` **for any product**". On those CVEs the fix versions
+mostly belong to Microsoft Edge, Adobe Flash and Imagination DDK — not to
+Android. Re-measured, asking only for `google:android` bounds:
+
+```
+Android-matched CVEs sampled        : 1000   (5 pages, spread across the corpus)
+  carrying a google:android CPE     : 1000
+  ...with an exact Android fix ver  :    9   (1%)
+  ...with inclusive bound only      :   26
+  ...with no version bound at all   :  965
+```
+
+**NVD publishes essentially no Android fix versions: 9 in 1000.** The nine that
+exist are scattered and old (CVE-2011-1823 to 2.3.4, CVE-2022-39912 to 13.0).
+
+Consequence: a `Fix` column fed only from NVD would be blank on virtually every
+Android row. That is the same class of failure as the empty-vendor bug fixed in
+`fe38f08` — the feature would appear shipped while silently excluding the
+platform it was requested for. The bulletin source is therefore not optional
+and not last; it is the **only** source of Android fix data.
+
 ## Feasibility, measured against the live APIs
 
-Everything below was measured, not assumed. Numbers are from September 2026.
+### NVD version bounds — good for the general fleet, not for Android
 
-### NVD version bounds — the primary usable source
-
-NVD's `cve.configurations[].nodes[].cpeMatch[]` entries can carry version
-bounds. Three fields matter:
+`cve.configurations[].nodes[].cpeMatch[]` can carry three bounds:
 
 | Field | Meaning | Usable as a fix version? |
 |---|---|---|
@@ -24,40 +55,103 @@ bounds. Three fields matter:
 | `versionEndIncluding` | versions **up to and including** this are vulnerable | Partially — the fix is "later than X", exact version unstated |
 | `versionStartIncluding` | lower bound of the affected range | No, but needed to state the range accurately |
 
-Coverage on a 200-CVE sample of recently modified CVEs:
+Measured over the last 30 days of modifications:
 
 ```
-with any version bound            140/200   70%
-with versionEndExcluding (= fix)  115/200   58%
+RECENT ALL CVEs   n=200 of 19,386 modified
+  exact fix version : 115  (57%)
+  inclusive only    :  25
+  no bound          :  60
 ```
 
-Coverage on a 300-CVE Android sample specifically:
+Real examples:
 
 ```
-versionEndExcluding (exact fix)   166/300   55%
-only versionEndIncluding           17/300    6%
-no version bound at all           117/300   39%
+CVE-2013-0074   microsoft:silverlight        fixed in 5.1.20125.0
+CVE-2015-3246   libuser_project:libuser      fixed in 0.56.13-8
+CVE-2017-0144   siemens:acuson_sc2000_fw     fixed in 4.0e
+CVE-2026-21733  imaginationtech:ddk          fixed in 25.3
 ```
 
-So roughly **55–58% of CVEs can be given an exact "fixed in" version** from
-data we already fetch. Real examples pulled from the API:
+So **~57% of CVEs generally** can be given an exact "fixed in" version from
+data already fetched. That covers the Windows / Linux / networking fleet well
+and is worth shipping on its own. Coverage is much worse on the 2009-2012
+backfill (23% on the oldest Android-matched page), because the practice of
+publishing bounds improved over time.
+
+### Android Security Bulletins — the only Android source
+
+No structured "security patch level" field exists anywhere in NVD or MITRE.
+Deriving it from reference URLs was tested and rejected: across a 300-CVE
+Android sample, **0 had a bulletin reference URL**. CVE-2024-56193 was an
+outlier.
+
+Google's bulletins are HTML with no JSON feed, so this means a scraper. Probed
+live, they are far more tractable than that suggests:
 
 ```
-CVE-2025-20979   google:android              fixed in 15.0
-CVE-2013-0074    microsoft:silverlight       fixed in 5.1.20125.0
-CVE-2015-3246    libuser_project:libuser     fixed in 0.56.13-8
-CVE-2017-0144    siemens:acuson_sc2000_fw    fixed in 4.0e
+GET https://source.android.com/docs/security/bulletin
+  HTTP 200, 277 KB, 125 month links, 2015-08-01 .. 2025-12-01
+
+GET https://source.android.com/docs/security/bulletin/2025-12-01
+  HTTP 200, 304 KB, 13 tables, 106 distinct CVE ids, 103 CVE rows
+  row0: ["CVE-2025-22420","A-337775777","EoP","High","13, 14, 15, 16"]
 ```
 
-Note the older CPE entries skew toward `versionEndIncluding`; only 88 of 1,372
-cpeMatch entries on a sample of *old* Android CVEs had any bound at all. The
-practice improved over time, so coverage is much better for recent CVEs than
-for the 2009–2012 backfill.
+125 months x ~40-100 CVEs is roughly **8,000-12,000 CVE-to-patch-level
+mappings** — a decade of Android remediation data, none of which NVD has.
+
+The patch level comes from the URL; the versions come from the row. Together
+they answer the ask exactly:
+
+> CVE-2025-22420 — fixed in Android 13, 14, 15, 16 at security patch level
+> 2025-12-01
+
+#### Parse by header, never by column position
+
+Table shape varies across the decade, so positional parsing would silently
+mis-assign fields. Measured:
+
+```
+2015-08-01  CVE | Bug(s) with AOSP links | Severity | Affected versions      (4 cols)
+2018-06-01  CVE | References | Type | Severity | Updated AOSP versions       (5 cols)
+2021-03-01  CVE | References | Type | Severity | Updated AOSP versions
+2023-09-01  CVE | References | Type | Severity | Updated AOSP versions
+2025-03-01  CVE | References | Type | Severity | Updated AOSP versions
+2025-12-01  CVE | References | Type | Severity | Updated AOSP versions
+```
+
+Three findings that dictate the parser's shape:
+
+1. **The header has been stable since 2018** — identical across 2018, 2021,
+   2023 and both 2025 samples. Seven years of stability is a good sign for a
+   scraper.
+2. **Not every table carries versions.** Each bulletin also contains tables
+   headed `... | Severity | Subcomponent` (Qualcomm and other vendor
+   components) and, new in 2025-12, `References | Android Launch Version |
+   Kernel Launch Version | Minimum Update Version`. Only tables whose header
+   has an *AOSP versions* / *Affected versions* column carry the data we want;
+   the rest must be skipped, not parsed positionally.
+3. **2015 is the outlier**: a 4-column header with no `Type`, and version
+   values expressed as ranges (`5.1 and below`) rather than lists. Either
+   handle it or declare 2018 the floor — 2018 is defensible, since no fleet
+   runs Android 5.
+
+Fragility is the real cost. Guards required:
+
+- Select tables and columns **by header text**, so a new or reordered column
+  cannot corrupt existing fields.
+- Treat *HTTP 200 that yields zero CVE rows* as a layout change and fail
+  loudly, never as an empty month. That is the signature of a restructure.
+- Pin a saved real bulletin page as a test fixture.
+- Bulletins never change once published, so store per-month and fetch only
+  months not already stored. One index fetch per cycle, and roughly zero
+  bulletin fetches in the steady state.
 
 ### CISA KEV — remediation deadline, not a version
 
-KEV carries four fields we do not currently ingest: `requiredAction`,
-`dueDate`, `knownRansomwareCampaignUse`, `notes`.
+KEV carries four fields not currently ingested: `requiredAction`, `dueDate`,
+`knownRansomwareCampaignUse`, `notes`.
 
 `requiredAction` is mostly boilerplate — across all 1,695 entries:
 
@@ -67,155 +161,124 @@ KEV carries four fields we do not currently ingest: `requiredAction`,
 264x  "Apply mitigations per vendor instructions or discontinue use..."
 ```
 
-So it is not a fix version. But `dueDate` and `knownRansomwareCampaignUse` are
-genuinely valuable for prioritising *which* fix to apply first, and `notes`
-often carries a vendor advisory URL. Worth ingesting regardless of this
-feature.
-
-### DECISION (recorded): both are required
-
-Asked whether "update to Android 15.0" was sufficient, the answer was: give
-**both the Android version and the monthly patch level**, to pre-empt the
-follow-up questions. So the bulletin source below is **required**, not
-optional, and step 5 in the order of work moves up.
-
-### The Android patch-level granularity — needs a new source
-
-This is the gap between what was asked for and what the current sources can
-give.
-
-There is **no structured "security patch level" field** anywhere in NVD or
-MITRE. What NVD gives for Android is the release version
-(`versionEndExcluding: 15.0` → "update to Android 15"), not the monthly patch
-level (`2025-03-01`) that Android admins actually track.
-
-One Android CVE (CVE-2024-56193) did carry a reference URL containing a patch
-level — `source.android.com/security/bulletin/pixel/2025-05-01` — which looked
-like a way to derive it. **It is not viable**: across a 300-CVE Android sample,
-**0 had a bulletin reference**. That example was an outlier, and any parser
-built on it would produce almost nothing.
-
-Getting true patch-level granularity requires ingesting Google's Android
-Security Bulletins as a fourth source. They are HTML with no official JSON
-feed, so this means a scraper — but they are far more structured than that
-suggests. Probed live:
-
-```
-GET https://source.android.com/docs/security/bulletin/2025-03-01
-  HTTP 200, 277 KB, 10 <table> elements, 41 distinct CVE ids
-
-  sample row, tags stripped:
-  CVE-2024-43093  A-341680936  EoP  High  12, 12L, 13, 14, 15
-
-GET https://source.android.com/docs/security/bulletin
-  HTTP 200 - index page listing every monthly patch level
-```
-
-That row carries everything needed: the CVE id, Google's internal bug id, the
-vulnerability type, the severity, and **the affected Android versions**. The
-patch level itself comes from the URL. So for that example the dashboard could
-state, exactly as asked:
-
-> CVE-2024-43093 - affects Android 12, 12L, 13, 14, 15 - fixed in the
-> 2025-03-01 security patch level
-
-The index page enumerates the monthly bulletins, so discovery does not need
-guessing at URLs. Bulletins are published monthly and never change once out,
-so this is cheap to poll and trivially cacheable: fetch the index, fetch only
-bulletins not already stored.
-
-Fragility is the real cost, and it is worth being honest about it. This is
-scraped HTML on a site Google can restructure without notice, so it needs:
-a parser that fails loudly rather than silently returning zero rows; a test
-against a saved fixture of a real bulletin page; and an alert when a fetch
-yields no CVEs from a page that returned HTTP 200, which is the signature of
-a layout change rather than an empty month.
+Not a fix version. But `dueDate` and `knownRansomwareCampaignUse` are genuinely
+valuable for prioritising *which* fix to apply first, and `notes` often carries
+a vendor advisory URL. Worth ingesting regardless of this feature.
 
 ## What to build
 
 ### Data model
 
 One CVE can affect many products, each with its own affected range and fix
-version, so this does not fit a single column. Two options:
+version, so this does not fit a single column.
 
-**Option A — a `remediations` JSONB column on `vulnerabilities`.**
+**Chosen: a `remediations` JSONB column on `vulnerabilities`.**
+
 ```json
 [
-  { "vendor": "google", "product": "android",
-    "affected_from": null, "affected_to": "15.0",
-    "bound": "exclusive", "fixed_in": "15.0" }
+  { "source": "NVD",
+    "vendor": "microsoft", "product": "edge",
+    "affected_from": null, "affected_to": "93.0.961.38",
+    "bound": "exclusive", "fixed_in": "93.0.961.38", "patch_level": null },
+
+  { "source": "Android Bulletin",
+    "vendor": "google", "product": "android",
+    "fixed_in": "13, 14, 15, 16", "patch_level": "2025-12-01" }
 ]
 ```
-Simplest, no join, and matches the existing pattern (`source_labels` is already
-jsonb with a GIN index). Filtering "has a known fix" is
-`remediations @> '[{"fixed_in": ...}]'`-shaped, or a generated boolean column.
 
-**Option B — a `remediations` child table** keyed on `cve_id`.
-Normalised, easier to query per product, but adds a join to the list query,
-which currently does one table scan per page. Given the list endpoint already
-returns everything the detail panel needs, a join would undo that.
+Rejected the alternative of a `remediations` child table: it would add a join
+to the list query, which currently does one table scan per page and already
+returns everything the detail panel needs. The chosen shape matches the
+existing `source_labels` pattern (jsonb plus a GIN index).
 
-**Recommendation: Option A.** It preserves the single-query list read, and the
-consumer is a display panel rather than an analytical query.
+`patch_level` is a **general nullable field** on every entry rather than an
+Android-specific column — it generalises to any vendor publishing dated patch
+levels (Microsoft's Patch Tuesday, Oracle's quarterly CPUs), and costs nothing
+when null.
 
-Also add, from KEV: `kev_due_date DATE`, `kev_ransomware BOOLEAN`,
+Add a maintained `has_fix BOOLEAN` so the "what can I action today" filter is
+an indexed boolean rather than a jsonb probe.
+
+Also from KEV: `kev_due_date DATE`, `kev_ransomware BOOLEAN`,
 `kev_required_action TEXT`.
+
+### Merge semantics
+
+`remediations` is a union keyed on `(source, vendor, product, patch_level)`,
+appended in `deduplication.js` alongside the existing reference and CWE unions.
+It must NOT be last-writer-wins: the NVD entry and the bulletin entry for one
+CVE arrive on different fetch cycles, so a plain overwrite would make each
+source erase the other's remediation on every poll.
+
+It also has to be added to `CONFLICT_TARGETS` in `repository.js` so the
+conditional-upsert change test covers it — a column absent from that list is
+never written on conflict.
 
 ### Parsing
 
-Extend `server/src/lib/cpe.js`, which already parses the CPE list and is
-already covered by `server/tests/cpe.test.js`. It currently discards the
-`version*` fields on each `cpeMatch`; the work is to keep them and emit one
-remediation entry per distinct (vendor, product, range).
+Extend `server/src/lib/cpe.js`, already covered by `server/tests/cpe.test.js`.
+It currently discards the `version*` fields on each `cpeMatch`; keep them and
+emit one remediation per distinct (vendor, product, range).
 
-Deduplicate aggressively. A CVE with 163 CPE entries will produce many
-near-identical ranges, and the panel needs a handful, not 163.
+Note that `describeFromCpe` reaches the CPE list through
+`collectCpeCriteria`, which returns only the `criteria` **string** from each
+`cpeMatch` and so drops the sibling version fields. That helper must either
+return the whole match object or gain a parallel one; its current signature is
+asserted by tests and must not silently change meaning.
+
+Deduplicate aggressively. A CVE with 163 CPE entries produces many
+near-identical ranges; the panel needs a handful, not 163.
 
 ### UI
 
-The ask mentioned "a column or maybe a separate page". A separate page is not
-needed — the expandable detail row added in `2566e2f` is the natural home, and
-it already renders per-CVE structure.
+A separate page is not needed — the expandable detail row added in `2566e2f`
+is the natural home.
 
-- **A `Fix` column** in the table showing the primary fix version, chosen the
-  same way the primary vendor is chosen. Must distinguish three states
-  honestly, because 39–42% of rows will have no fix data:
-  - `15.0` — a known fix version
-  - `> 1.5` — only an inclusive upper bound is published
+- **A `Fix` column** showing the primary fix, distinguishing three states
+  honestly, because ~40% of rows will have no fix data:
+  - `15.0` or `2025-12-01` — a known fix
+  - `> 1.5` — only an inclusive upper bound published
   - `—` with a tooltip "no fix version published" — genuinely absent, not
     merely unloaded
 - **A Remediation section in the detail panel** listing every
-  (product, affected range, fixed in) tuple, plus the KEV due date and
-  ransomware flag when present.
-- **A filter** for "has a known fix", which is the query an admin actually
-  wants: *what can I action today?*
+  (product, affected range, fixed in, patch level) tuple, plus the KEV due date
+  and ransomware flag.
+- **A "has a known fix" filter** — the query an admin actually wants.
 
-### Order of work
+## Order of work
 
-1. Ingest the KEV fields (`dueDate`, `knownRansomwareCampaignUse`,
-   `requiredAction`). Small, self-contained, immediately useful for
-   prioritisation, and independent of everything else.
-2. Keep the `version*` bounds in `lib/cpe.js` and add the `remediations`
-   column plus its migration.
-3. The `Fix` column and the detail-panel section.
-4. The "has a known fix" filter.
-5. The Android Security Bulletin source, for patch levels. **Required** per
-   the decision above. Fetch the index to enumerate months, fetch each unseen
-   bulletin, parse the tables to `(cve_id, patch_level, affected_versions[])`,
-   and store it as another remediation entry alongside the CPE-derived ones.
-   Guard it: fail loudly on a 200 that yields no CVEs, and pin a saved
-   bulletin page as a test fixture.
+Revised from the first draft: the bulletin source moves from last to second,
+because the correction above shows it is the only source that serves the
+motivating request.
 
-## Decisions needed before starting
+1. **KEV fields** (`dueDate`, `knownRansomwareCampaignUse`, `requiredAction`).
+   Small, self-contained, immediately useful, independent of everything else.
+2. **The `remediations` column, migration and merge semantics.** Schema first,
+   since both ingest paths below write it.
+3. **The Android bulletin source.** Index fetch to enumerate months, per-month
+   fetch of unseen bulletins, header-driven table parsing to
+   `(cve_id, patch_level, affected_versions[])`, guarded and fixture-tested per
+   above. This is what delivers the actual ask.
+4. **NVD version bounds** — keep `version*` in `lib/cpe.js` and emit
+   remediation entries from the CPE list.
+5. **The `Fix` column and the detail-panel Remediation section.**
+6. **The "has a known fix" filter** plus `has_fix` and its index.
+
+## Open decisions
 
 - ~~Is "update to Android 15.0" useful enough?~~ **Answered: both the version
-  and the monthly patch level are wanted.** Step 5 is required.
-- **Where does the patch level live in the schema?** It is Android-specific, so
-  either a nullable `patch_level` on each remediation entry (general, mostly
-  empty) or an Android-only field. The former generalises to any vendor that
-  publishes dated patch levels, which is worth having.
+  and the monthly patch level.**
+- ~~Where does the patch level live in the schema?~~ **Answered: a general
+  nullable `patch_level` on every remediation entry.**
+- **How far back should bulletins be ingested?** All 125 months (2015+) is
+  ~8-12k mappings and a one-time backfill, but pre-2018 needs the outlier
+  parser. Proposal: floor at 2018-06, revisit if anyone runs Android 5.
 - **How should a CVE with many affected products present in one column?**
   Primary-plus-count ("15.0 +3 more") is the obvious answer, but it inherits
-  the same "which one is primary" ambiguity already documented in `lib/cpe.js`.
+  the "which product is primary" ambiguity documented in `lib/cpe.js`. For
+  Android rows the bulletin entry should win the column regardless of CPE
+  frequency — the measured reason being that the frequency heuristic picks
+  Adobe or Microsoft on Android-matched CVEs.
 - **Should rows with no known fix be visually distinct?** With ~40% lacking
-  data, a blank column may read as a bug rather than as an absence.
+  data, a blank column may read as a bug rather than an absence.
