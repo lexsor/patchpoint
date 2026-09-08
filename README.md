@@ -78,6 +78,8 @@ cp .env.example .env
 | `NVD_LOOKBACK_DAYS` | `30` | How far back each NVD poll looks for modified CVEs (NVD caps this at 120) |
 | `NVD_MAX_PAGES` | `5` | Page cap per NVD poll, 2000 records per page |
 | `MITRE_ENRICH_LIMIT` | `25` | CVEs enriched via MITRE per cycle |
+| `NVD_PLATFORMS` | android, windows 10/11/server 2022, linux kernel, cisco ios | Comma-separated CPE match strings swept in full, so your platforms are covered regardless of the rolling window. Empty disables |
+| `NVD_PLATFORM_MAX_PAGES` | `12` | Page cap per platform sweep (2000 records a page) |
 | `POLL_INTERVAL_HOURS` | `6` | Automatic fetch interval |
 
 ### Severity
@@ -87,6 +89,41 @@ records exploitation. Severities come from NVD and MITRE, and the KEV sweep runs
 every cycle so KEV records are scored rather than left blank. The severity filter
 offers the full CVSS vocabulary (CRITICAL / HIGH / MEDIUM / LOW) regardless of
 what has been ingested; vendor and technology options are data-derived.
+
+### Platform coverage
+
+The rolling NVD window is a delta feed: it reports what changed recently, not
+what exists. Measured against the live API, 9,384 CVEs affect
+`cpe:2.3:o:google:android` but only about 97 were modified in the last 30 days
+— so a dashboard for a fleet that includes Android devices showed almost none
+of them.
+
+`NVD_PLATFORMS` fixes that by sweeping each listed platform in full. The
+default list covers Android, Windows 10/11, Windows Server 2022, the Linux
+kernel and Cisco IOS. Add your own with CPE names from
+[the NVD CPE search](https://nvd.nist.gov/products/cpe/search); adding a
+platform costs roughly `ceil(cve_count / 2000)` requests per cycle, paced at
+6.5s without an API key and 0.8s with one.
+
+Attribution comes from the CPE list too. NVD publishes no vendor or product
+field, so records used to be stored with all three of vendor, product and
+technology empty — invisible to every filter and findable only by a
+description search. They are now derived from
+`cve.configurations[].nodes[].cpeMatch[].criteria`.
+
+Two details worth knowing about how that is derived:
+
+- **Vendor and product are a best guess.** A CVE can list over a hundred CPE
+  entries, so the most frequently referenced vendor/product pair wins. That
+  heuristic was picked by measurement — it identified the right subject in 3 of
+  4 hand-checked CVEs, against 1 of 4 for weighting operating-system entries
+  higher, because CPE enumerates every affected *version* and so counts reflect
+  catalogue granularity rather than relevance.
+- **Technology is derived from the whole CPE list**, not the primary pair, so a
+  CVE affecting both Safari and Android is still findable under `mobile`. That
+  makes the Technology filter the reliable way to slice by platform, since it
+  does not depend on picking one winner. Note that `networking` is checked
+  before `mobile` so Cisco's IOS does not collide with Apple's.
 
 ### Network exposure
 

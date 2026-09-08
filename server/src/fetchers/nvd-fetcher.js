@@ -1,5 +1,6 @@
 const { httpGetText, sleep } = require('../lib/http');
 const { classifySeverity } = require('../lib/severity');
+const { describeFromCpe } = require('../lib/cpe');
 
 const NVD_API_URL = 'https://services.nvd.nist.gov/rest/json/cves/2.0';
 const RESULTS_PER_PAGE = 2000; // Max allowed by NVD
@@ -23,9 +24,14 @@ const REQUEST_TIMEOUT_MS = 60000;
  * @param {boolean} [opts.hasKev]          Restrict to CVEs in the CISA KEV
  *                                         catalogue (~1,700 records, so one
  *                                         page covers the whole set).
+ * @param {string} [opts.virtualMatchString] Restrict to CVEs affecting a CPE,
+ *                                         e.g. cpe:2.3:o:google:android. Used
+ *                                         to guarantee coverage of platforms
+ *                                         the operator actually runs, which
+ *                                         the rolling window alone does not.
  * @param {string} [opts.apiKey]          Optional NVD API key.
  */
-async function fetchNvd({ startIndex = 0, lastModStartDate, lastModEndDate, hasKev = false, apiKey } = {}) {
+async function fetchNvd({ startIndex = 0, lastModStartDate, lastModEndDate, hasKev = false, virtualMatchString, apiKey } = {}) {
     const params = new URLSearchParams({
         resultsPerPage: String(RESULTS_PER_PAGE),
         startIndex: String(startIndex),
@@ -42,6 +48,10 @@ async function fetchNvd({ startIndex = 0, lastModStartDate, lastModEndDate, hasK
         params.set('hasKev', '');
     }
 
+    if (virtualMatchString) {
+        params.set('virtualMatchString', virtualMatchString);
+    }
+
     const url = `${NVD_API_URL}?${params.toString()}`;
     const key = apiKey !== undefined ? apiKey : process.env.NVD_API_KEY || '';
 
@@ -50,7 +60,9 @@ async function fetchNvd({ startIndex = 0, lastModStartDate, lastModEndDate, hasK
     const headers = { Accept: 'application/json' };
     if (key) headers.apiKey = key;
 
-    const scope = hasKev ? ' scope=kev' : (lastModStartDate ? ` window=${lastModStartDate}..${lastModEndDate}` : '');
+    const scope = hasKev ? ' scope=kev'
+        : virtualMatchString ? ` scope=${virtualMatchString}`
+        : (lastModStartDate ? ` window=${lastModStartDate}..${lastModEndDate}` : '');
     console.log(`[NVD] Fetching startIndex=${startIndex}${scope}`);
 
     let attempt = 0;
@@ -87,6 +99,9 @@ function parseNvdPage(body, startIndex) {
         if (!cve || !cve.id) continue;
 
         const cvss = extractCvss(cve);
+        // NVD publishes no vendor/product field; the only machine-readable
+        // attribution is the CPE list, which this fetcher previously ignored.
+        const cpe = describeFromCpe(cve);
 
         records.push({
             cve_id: cve.id,
@@ -98,9 +113,9 @@ function parseNvdPage(body, startIndex) {
             cvss_vector: cvss.vector || '',
             published_date: toDateOnly(cve.published),
             modified_date: toDateOnly(cve.lastModified),
-            vendor: '',
-            product: '',
-            tech_type: '',
+            vendor: cpe.vendor,
+            product: cpe.product,
+            tech_type: cpe.tech_type,
             references: (cve.references || []).map((r) => r.url).filter(Boolean),
             cwes: extractCwes(cve),
         });

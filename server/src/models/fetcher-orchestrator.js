@@ -26,6 +26,34 @@ const NVD_DELAY_WITH_KEY_MS = 800;
 // one request per CVE and previously fired them back to back. Space them out.
 const MITRE_DELAY_MS = 250;
 
+/**
+ * Platforms to guarantee coverage for, as CPE match strings.
+ *
+ * The rolling modification window is not enough on its own. Measured against
+ * the live API: 9,384 CVEs affect google:android, but only 97 of them were
+ * modified in the last 30 days -- and that window itself holds 19,271 CVEs
+ * against a 10,000-record page cap, so even those 97 are not guaranteed to
+ * land. A dashboard for a fleet that includes Android devices therefore showed
+ * almost no Android CVEs.
+ *
+ * Each entry is swept in full, so the platforms an operator actually runs are
+ * covered regardless of when NVD last touched the record.
+ */
+const DEFAULT_NVD_PLATFORMS = [
+    'cpe:2.3:o:google:android',
+    'cpe:2.3:o:microsoft:windows_10',
+    'cpe:2.3:o:microsoft:windows_11',
+    'cpe:2.3:o:microsoft:windows_server_2022',
+    'cpe:2.3:o:linux:linux_kernel',
+    'cpe:2.3:o:cisco:ios',
+];
+
+const listFromEnv = (name, fallback) => {
+    const raw = process.env[name];
+    if (raw === undefined) return fallback;
+    return raw.split(',').map((s) => s.trim()).filter(Boolean);
+};
+
 const intFromEnv = (name, fallback) => {
     const parsed = parseInt(process.env[name], 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -215,6 +243,13 @@ async function pageThroughNvd(query, { maxPages, delayMs, label }) {
 async function fetchNvdSource() {
     const lookbackDays = Math.min(intFromEnv('NVD_LOOKBACK_DAYS', 30), 120);
     const maxPages = intFromEnv('NVD_MAX_PAGES', 5);
+    // Platform sweeps are historical backfills rather than deltas, so they get
+    // their own, higher cap. Measured volumes at 2,000 records per page:
+    // android 9,384 (5 pages), windows_10 4,063 (3), windows_11 598 (1),
+    // windows_server_2022 3,391 (2), linux_kernel 20,398 (11), cisco:ios 615
+    // (1). 12 covers all of them, including the kernel, which an 8-page cap
+    // would have silently truncated.
+    const platformMaxPages = intFromEnv('NVD_PLATFORM_MAX_PAGES', 12);
     const apiKey = process.env.NVD_API_KEY || '';
     const delayMs = apiKey ? NVD_DELAY_WITH_KEY_MS : NVD_DELAY_NO_KEY_MS;
 
@@ -222,6 +257,22 @@ async function fetchNvdSource() {
     console.log(`[Fetcher] NVD KEV sweep: ${kev.stored} scored from ${kev.fetched} fetched`);
 
     await sleep(delayMs);
+
+    // Platform sweeps. Without these, coverage of a given platform depends on
+    // NVD having touched the record inside the rolling window, which for
+    // Android meant 97 of 9,384.
+    const platforms = listFromEnv('NVD_PLATFORMS', DEFAULT_NVD_PLATFORMS);
+    const platformResults = [];
+
+    for (const platform of platforms) {
+        const result = await pageThroughNvd(
+            { virtualMatchString: platform, apiKey },
+            { maxPages: platformMaxPages, delayMs, label: `platform ${platform}` }
+        );
+        platformResults.push({ platform, ...result });
+        console.log(`[Fetcher] NVD platform ${platform}: ${result.stored} stored from ${result.fetched} fetched`);
+        await sleep(delayMs);
+    }
 
     const end = new Date();
     const start = new Date(end.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
@@ -231,13 +282,19 @@ async function fetchNvdSource() {
         apiKey,
     }, { maxPages, delayMs, label: `${lookbackDays}-day window` });
 
+    const platformFetched = platformResults.reduce((n, r) => n + r.fetched, 0);
+    const platformStored = platformResults.reduce((n, r) => n + r.stored, 0);
+
     return {
-        fetched: kev.fetched + recent.fetched,
-        stored: kev.stored + recent.stored,
+        fetched: kev.fetched + recent.fetched + platformFetched,
+        stored: kev.stored + recent.stored + platformStored,
         extra: {
             kev: { fetched: kev.fetched, stored: kev.stored, truncated: kev.truncated },
             recent: { fetched: recent.fetched, stored: recent.stored, truncated: recent.truncated },
-            truncated: kev.truncated || recent.truncated,
+            platforms: platformResults.map((r) => ({
+                platform: r.platform, fetched: r.fetched, stored: r.stored, truncated: r.truncated,
+            })),
+            truncated: kev.truncated || recent.truncated || platformResults.some((r) => r.truncated),
         },
     };
 }

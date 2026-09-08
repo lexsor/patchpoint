@@ -1,5 +1,6 @@
 const { httpGetText } = require('../lib/http');
 const { classifySeverity } = require('../lib/severity');
+const { classifyTechType } = require('../lib/tech-type');
 
 const API_BASE = 'https://cveawg.mitre.org/api/cve';
 const REQUEST_TIMEOUT_MS = 30000;
@@ -130,35 +131,10 @@ function extractAffected(affected) {
     return { vendor: '', product: '' };
 }
 
-const TECH_TYPE_KEYWORDS = {
-    networking: ['router', 'switch', 'firewall', 'cisco', 'juniper', 'fortinet', 'vpn'],
-    mobile: ['android', 'ios', 'iphone', 'smartphone', 'mobile'],
-    os: ['linux', 'windows', 'macos', 'operating system', 'kernel', 'solaris'],
-    web: ['apache', 'nginx', 'tomcat', 'wordpress', 'drupal', 'joomla', 'iis', 'http server'],
-    database: ['mysql', 'postgresql', 'mongodb', 'oracle database', 'mariadb', 'sql server'],
-    browser: ['chrome', 'chromium', 'firefox', 'safari', 'edge', 'webkit'],
-    container: ['docker', 'kubernetes', 'containerd', 'k8s', 'openshift'],
-};
-
-/**
- * Best-effort technology bucket from product/vendor/description text.
- * Returns '' rather than 'other' when nothing matches, so the Technology
- * filter only ever offers buckets that were actually identified.
- */
-function classifyTechType(text) {
-    const haystack = String(text || '').toLowerCase();
-    if (!haystack.trim()) return '';
-
-    for (const [type, keywords] of Object.entries(TECH_TYPE_KEYWORDS)) {
-        if (keywords.some((kw) => haystack.includes(kw))) return type;
-    }
-    return '';
-}
-
 function toDateOnly(value) {
     if (!value || typeof value !== 'string') return null;
     const datePart = value.split('T')[0];
     return /^\d{4}-\d{2}-\d{2}$/.test(datePart) ? datePart : null;
 }
 
-module.exports = { fetchMitreCvew, parseCveRecord, classifyTechType };
+module.exports = { fetchMitreCvew, parseCveRecord };

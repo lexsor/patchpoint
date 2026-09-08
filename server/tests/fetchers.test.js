@@ -227,6 +227,65 @@ describe('NVD fetcher', () => {
         expect(options.headers.apiKey).toBe('secret-key');
     });
 
+    test('populates vendor, product and tech_type from the CPE list', async () => {
+        // NVD publishes no vendor/product field, so this fetcher used to store
+        // all three as empty strings -- every NVD record was unattributed and
+        // could not be found by vendor, product or the Technology filter.
+        httpGetText.mockResolvedValue(ok(JSON.stringify({
+            totalResults: 1,
+            resultsPerPage: 1,
+            vulnerabilities: [{
+                cve: {
+                    id: 'CVE-2024-7777',
+                    published: '2024-03-01T00:00:00.000',
+                    lastModified: '2024-03-02T00:00:00.000',
+                    descriptions: [{ lang: 'en', value: 'An Android issue.' }],
+                    configurations: [{
+                        nodes: [{
+                            cpeMatch: [
+                                { criteria: 'cpe:2.3:o:google:android:13.0:*:*:*:*:*:*:*' },
+                                { criteria: 'cpe:2.3:o:google:android:14.0:*:*:*:*:*:*:*' },
+                            ],
+                        }],
+                    }],
+                },
+            }],
+        })));
+
+        const result = await fetchNvd({ startIndex: 0 });
+
+        expect(result.records[0].vendor).toBe('google');
+        expect(result.records[0].product).toBe('android');
+        expect(result.records[0].tech_type).toBe('mobile');
+    });
+
+    test('leaves attribution empty when a CVE carries no CPE', async () => {
+        httpGetText.mockResolvedValue(ok(JSON.stringify(NVD_PAGE)));
+
+        const result = await fetchNvd({ startIndex: 0 });
+
+        expect(result.records[0].vendor).toBe('');
+        expect(result.records[0].tech_type).toBe('');
+    });
+
+    test('sends virtualMatchString for a platform sweep', async () => {
+        // The rolling window alone covered 97 of 9,384 Android CVEs; a
+        // platform sweep is what guarantees coverage of a fleet's platforms.
+        httpGetText.mockResolvedValue(ok(JSON.stringify(NVD_PAGE)));
+
+        await fetchNvd({ startIndex: 0, virtualMatchString: 'cpe:2.3:o:google:android' });
+
+        const [url] = httpGetText.mock.calls[0];
+        expect(url).toContain('virtualMatchString=');
+        expect(decodeURIComponent(url)).toContain('cpe:2.3:o:google:android');
+    });
+
+    test('omits virtualMatchString by default', async () => {
+        httpGetText.mockResolvedValue(ok(JSON.stringify(NVD_PAGE)));
+        await fetchNvd({ startIndex: 0 });
+        expect(httpGetText.mock.calls[0][0]).not.toContain('virtualMatchString');
+    });
+
     test('sends the hasKev flag when asked', async () => {
         // One paged hasKev query scores the whole CISA KEV catalogue (~1,700
         // CVEs). Without it those records carry no severity, because CISA
