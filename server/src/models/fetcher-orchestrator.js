@@ -27,6 +27,34 @@ const intFromEnv = (name, fallback) => {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+/**
+ * Reduce an internal error to something safe to return over the API.
+ *
+ * `GET /api/fetch/status` and `POST /api/fetch` are unauthenticated, and the
+ * raw message leaks more than it should: a JSON.parse failure embeds the first
+ * bytes of the upstream response, and a socket error embeds the address and
+ * port it failed to reach ("connect ECONNREFUSED 10.0.0.5:8080"). That turns
+ * any future request-forgery bug into a readable one. The full message still
+ * goes to the server log.
+ */
+function publicError(err) {
+    const message = String((err && err.message) || 'unknown error');
+
+    // An upstream HTTP status is genuinely useful to an operator and leaks
+    // nothing, so keep just that shape.
+    const status = /HTTP ([0-9]{3})/.exec(message);
+    if (status) return `upstream returned HTTP ${status[1]}`;
+    if (/timed out|ETIMEDOUT/i.test(message)) return 'upstream request timed out';
+    if (/Refusing (insecure|cross-host) redirect/i.test(message)) return 'upstream redirect refused';
+    if (/redirects/i.test(message)) return 'too many upstream redirects';
+    if (/ENOTFOUND|EAI_AGAIN/i.test(message)) return 'upstream host could not be resolved';
+    if (/ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|socket hang up/i.test(message)) {
+        return 'upstream connection failed';
+    }
+    if (/JSON|Unexpected token|not valid JSON/i.test(message)) return 'upstream returned malformed data';
+    return 'fetch failed';
+}
+
 let isFetching = false;
 let lastCompletedAt = null;
 let lastResult = null;
@@ -67,7 +95,7 @@ async function fetchAllSources() {
         console.log('[Fetcher] Full fetch cycle complete');
     } catch (err) {
         // Only an unexpected failure outside the per-source guards lands here.
-        results.error = err.message;
+        results.error = publicError(err);
         console.error('[Fetcher] Fetch error:', err.message);
     } finally {
         results.finished_at = new Date().toISOString();
@@ -97,8 +125,9 @@ async function runSource(name, fn) {
 
         return { total: outcome.stored, fetched: outcome.fetched, error: null, ...outcome.extra };
     } catch (err) {
+        // Full detail to the log, a sanitised summary to the API.
         console.error(`[Fetcher] ${name} error:`, err.message);
-        return { total: 0, fetched: 0, error: err.message };
+        return { total: 0, fetched: 0, error: publicError(err) };
     }
 }
 
@@ -249,4 +278,4 @@ function getFetchStatus() {
     };
 }
 
-module.exports = { fetchAllSources, getFetchStatus, SOURCE_CISA, SOURCE_NVD, SOURCE_MITRE };
+module.exports = { fetchAllSources, getFetchStatus, publicError, SOURCE_CISA, SOURCE_NVD, SOURCE_MITRE };

@@ -22,7 +22,11 @@ const pool = new Pool({
     port: parseInt(process.env.POSTGRES_PORT, 10) || 5432,
     database: process.env.POSTGRES_DB || 'vuln_dashboard',
     user: process.env.POSTGRES_USER || 'vuln_user',
-    password: process.env.POSTGRES_PASSWORD || 'vuln_password',
+    // No fallback. A hardcoded default password is how a stack ends up
+    // reachable with a credential published in this repository. Absence is
+    // checked in initDb() rather than here, so it reports through the normal
+    // startup path instead of throwing at require time.
+    password: process.env.POSTGRES_PASSWORD,
     max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,
@@ -39,6 +43,13 @@ function getDb() {
 }
 
 async function initDb() {
+    if (!process.env.POSTGRES_PASSWORD) {
+        throw new Error(
+            'POSTGRES_PASSWORD is not set. Copy .env.example to .env and set a password '
+            + 'before starting the stack.'
+        );
+    }
+
     const client = await pool.connect();
     try {
         const schemaPath = path.join(__dirname, 'schema.sql');

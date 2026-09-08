@@ -5,14 +5,21 @@ const { initDb, closeDb } = require('./db/client');
 const vulnerabilityRoutes = require('./routes/vulnerabilities');
 const watchlistRoutes = require('./routes/watchlist');
 const { startPolling, stopPolling } = require('./services/scheduler');
+const { corsOptions, crossSiteGuard, securityHeaders } = require('./middleware/security');
 
 const PORT = parseInt(process.env.PORT, 10) || 3001;
+// Inside a container this must be 0.0.0.0 for nginx to reach it across the
+// compose network; a bare `npm start` on a workstation should not expose the
+// unauthenticated API to the LAN, hence the loopback default.
+const HOST = process.env.HOST || '127.0.0.1';
 const POLL_INTERVAL_HOURS = parseFloat(process.env.POLL_INTERVAL_HOURS) || 6;
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+app.use(securityHeaders);
+app.use(cors(corsOptions()));
+app.use(crossSiteGuard);
+app.use(express.json({ limit: '64kb' }));
 
 app.use('/api', vulnerabilityRoutes);
 app.use('/api/watchlist', watchlistRoutes);
@@ -35,8 +42,8 @@ async function start() {
     try {
         await initDb();
 
-        const server = app.listen(PORT, () => {
-            console.log(`[Server] Listening on http://localhost:${PORT}`);
+        const server = app.listen(PORT, HOST, () => {
+            console.log(`[Server] Listening on http://${HOST}:${PORT}`);
             startPolling(POLL_INTERVAL_HOURS);
         });
 

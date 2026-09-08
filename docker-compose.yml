@@ -4,9 +4,18 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-vuln_dashboard}
       POSTGRES_USER: ${POSTGRES_USER:-vuln_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vuln_password}
-    ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set - copy .env.example to .env and choose a password}
+    # The database port is deliberately NOT published. Only `server` needs it
+    # and it reaches the DB over this compose network as host `db`. Publishing
+    # it exposed a superuser login to the whole LAN -- and because Docker DNATs
+    # published ports through the FORWARD chain, a host firewall denying
+    # inbound traffic does not block it.
+    #
+    # For an interactive session use the container directly:
+    #   docker compose exec db psql -U vuln_user -d vuln_dashboard
+    # If you genuinely need it on the host, add a gitignored
+    # docker-compose.override.yml binding it to loopback only:
+    #   services: { db: { ports: ["127.0.0.1:5433:5432"] } }
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -21,14 +30,23 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${PORT:-3001}:3001"
+      # Loopback only: the API has no authentication, and the browser reaches
+      # it same-origin through nginx rather than directly. This keeps the
+      # documented `curl localhost:3001/...` checks working while keeping an
+      # unauthenticated API off the network.
+      - "127.0.0.1:${PORT:-3001}:3001"
     environment:
       PORT: 3001
+      # Bind inside the container must stay 0.0.0.0 so nginx can reach it
+      # across the compose network; the loopback restriction above is what
+      # limits host exposure.
+      HOST: 0.0.0.0
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-vuln_dashboard}
       POSTGRES_USER: ${POSTGRES_USER:-vuln_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vuln_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set - copy .env.example to .env and choose a password}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       NVD_API_KEY: ${NVD_API_KEY:-}
       NVD_LOOKBACK_DAYS: ${NVD_LOOKBACK_DAYS:-30}
       NVD_MAX_PAGES: ${NVD_MAX_PAGES:-5}
@@ -45,6 +63,9 @@ services:
       context: .
       dockerfile: Dockerfile.client
     ports:
+      # Intentionally published on all interfaces: reaching the dashboard from
+      # another device on your network is the intended behaviour. Put it behind
+      # a reverse proxy with auth if that is not what you want.
       - "${CLIENT_PORT:-3000}:80"
     # nginx proxies /api to `server`, so wait for the API to pass its
     # healthcheck rather than merely for the container to be created.

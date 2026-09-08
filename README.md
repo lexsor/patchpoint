@@ -42,7 +42,12 @@ All data is deduplicated by CVE ID, merged into unified records with source labe
 ### Run the Stack
 
 ```bash
-# Start all services (PostgreSQL + Backend + Frontend)
+# 1. Set a database password. This is required -- the stack will not start
+#    without it, by design.
+cp .env.example .env
+#    then edit .env and change POSTGRES_PASSWORD
+
+# 2. Start all services (PostgreSQL + Backend + Frontend)
 docker compose up
 
 # Or run in detached mode
@@ -65,10 +70,10 @@ cp .env.example .env
 |----------|---------|-------------|
 | `POSTGRES_DB` | `vuln_dashboard` | Database name |
 | `POSTGRES_USER` | `vuln_user` | Database user |
-| `POSTGRES_PASSWORD` | `vuln_password` | Database password |
+| `POSTGRES_PASSWORD` | **required** | Database password. No default — `docker compose up` fails without it |
 | `PORT` | `3001` | Backend port |
 | `CLIENT_PORT` | `3000` | Frontend port |
-| `POSTGRES_PORT` | `5433` | Host port for the database (5433 avoids clashing with a local PostgreSQL) |
+| `ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated origins allowed to call the API cross-origin |
 | `NVD_API_KEY` | (empty) | Optional NVD API key. Without one NVD allows 5 requests/30s; with one, 50 |
 | `NVD_LOOKBACK_DAYS` | `30` | How far back each NVD poll looks for modified CVEs (NVD caps this at 120) |
 | `NVD_MAX_PAGES` | `5` | Page cap per NVD poll, 2000 records per page |
@@ -82,6 +87,18 @@ records exploitation. Severities come from NVD and MITRE, and the KEV sweep runs
 every cycle so KEV records are scored rather than left blank. The severity filter
 offers the full CVSS vocabulary (CRITICAL / HIGH / MEDIUM / LOW) regardless of
 what has been ingested; vendor and technology options are data-derived.
+
+### Network exposure
+
+Only the dashboard (`3000`) is published on all interfaces — reaching the UI
+from another device is intended. The API is bound to `127.0.0.1` because it has
+no authentication, and the **database port is not published at all**: only the
+backend needs it and it connects over the compose network. For an interactive
+session use `docker compose exec db psql -U vuln_user -d vuln_dashboard`.
+
+Note that Docker publishes ports through its own NAT/forward chains, so a host
+firewall that denies inbound traffic does **not** block a published port. That
+is why the bindings above matter rather than relying on the firewall.
 
 ### Theme
 
