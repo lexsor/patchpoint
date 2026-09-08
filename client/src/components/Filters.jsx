@@ -14,7 +14,8 @@ function Filters({ filters, filterOptions, onFilterChange, onClear }) {
 
     const hasActiveFilters = Boolean(
         filters.source || filters.severity || filters.startDate || filters.endDate
-        || filters.vendor || filters.techType || filters.kevFlag || filters.search
+        || filters.vendor || filters.techType || filters.kevFlag || filters.hasFix
+        || filters.search
     );
 
     return (
@@ -76,6 +77,15 @@ function Filters({ filters, filterOptions, onFilterChange, onClear }) {
                     <select id="filter-kev" value={filters.kevFlag} onChange={e => handleChange('kevFlag', e.target.value)}>
                         <option value="">All</option>
                         <option value="true">⚠ Yes</option>
+                        <option value="false">No</option>
+                    </select>
+                </div>
+
+                <div className="filter-group">
+                    <label htmlFor="filter-hasfix">Fix Available</label>
+                    <select id="filter-hasfix" value={filters.hasFix} onChange={e => handleChange('hasFix', e.target.value)}>
+                        <option value="">All</option>
+                        <option value="true">Yes</option>
                         <option value="false">No</option>
                     </select>
                 </div>

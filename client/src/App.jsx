@@ -16,6 +16,7 @@ const EMPTY_FILTERS = {
   vendor: '',
   techType: '',
   kevFlag: '',
+  hasFix: '',
   search: '',
 };
 

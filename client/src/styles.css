@@ -59,8 +59,18 @@
   --src-nvd-fg: #6ee7b7;
   --src-mitre-bg: rgba(236, 72, 153, 0.18);
   --src-mitre-fg: #f9a8d4;
+  --src-android-bg: rgba(132, 204, 22, 0.18);
+  --src-android-fg: #bef264;
   --src-other-bg: rgba(100, 116, 139, 0.18);
   --src-other-fg: #cbd5e1;
+
+  /* Fix column. `fixed` reuses the NVD green rather than introducing a
+     fourth accent; `bound` is deliberately muted, because "fixed sometime
+     after X" is weaker information than a named version. */
+  --fix-fg: #6ee7b7;
+  --fix-bound-fg: #fcd34d;
+  --ransomware-bg: rgba(239, 68, 68, 0.18);
+  --ransomware-fg: #fca5a5;
 
   /* Notices */
   --warn-bg: rgba(245, 158, 11, 0.12);
@@ -128,8 +138,15 @@
   --src-nvd-fg: #047857;
   --src-mitre-bg: #fce7f3;
   --src-mitre-fg: #be185d;
+  --src-android-bg: #ecfccb;
+  --src-android-fg: #3f6212;
   --src-other-bg: #f1f5f9;
   --src-other-fg: #475569;
+
+  --fix-fg: #047857;
+  --fix-bound-fg: #92400e;
+  --ransomware-bg: #fee2e2;
+  --ransomware-fg: #b91c1c;
 
   --warn-bg: #fef3c7;
   --warn-br: #f59e0b;
@@ -542,9 +559,45 @@ body {
   color: var(--src-mitre-fg);
 }
 
+.source-android {
+  background: var(--src-android-bg);
+  color: var(--src-android-fg);
+}
+
 .source-other {
   background: var(--src-other-bg);
   color: var(--src-other-fg);
+}
+
+/* Fix column.
+ *
+ * The three states are distinguished by colour AND by their text, never by
+ * colour alone: `fix-none` renders an em dash with a tooltip rather than an
+ * empty cell, because ~40% of rows genuinely have no published fix and a
+ * blank there reads as a loading bug. */
+.fix-cell {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.fix-fixed {
+  color: var(--fix-fg);
+  font-weight: 600;
+}
+
+.fix-bound {
+  color: var(--fix-bound-fg);
+}
+
+/* --text-muted, not --text-dim. The em dash is the entire content of this
+   cell and it carries real information ("no fix published") for roughly 40%
+   of rows, so it has to clear WCAG AA. Measured against the row background:
+   --text-dim is 3.93:1 in dark mode, which fails; --text-muted is 7.30:1
+   dark and 7.24:1 light while still reading as de-emphasised. */
+.fix-none {
+  color: var(--text-muted);
 }
 
 .kev-badge {
@@ -719,6 +772,11 @@ a.detail-chip:hover {
   border-color: var(--accent);
 }
 
+.detail-remediation {
+  margin-bottom: 12px;
+}
+
+.detail-remediation h5,
 .detail-references h5 {
   font-size: 0.7rem;
   font-weight: 600;
@@ -898,4 +956,42 @@ a.detail-chip:hover {
   .detail-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Remediation list in the expanded row. */
+.remediation-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.remediation-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.82rem;
+}
+
+.remediation-product {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.remediation-action {
+  color: var(--fix-fg);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.ransomware-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: var(--ransomware-bg);
+  color: var(--ransomware-fg);
 }

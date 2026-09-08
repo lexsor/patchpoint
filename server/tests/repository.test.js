@@ -538,6 +538,40 @@ describe('remediation fields reach the API', () => {
     });
 });
 
+describe('the has-a-known-fix filter', () => {
+    test('filters on the denormalised boolean, not a jsonb probe', async () => {
+        // The partial index is on has_fix, so a containment test against
+        // remediations could not be served by it.
+        const db = fakeDb([storedRow()]);
+
+        await repository.queryVulnerabilities({ page: 1, perPage: 25, hasFix: true });
+
+        const sql = db.selects().find((x) => /COUNT\(\*\) OVER\(\)/i.test(x.sql));
+        expect(sql.sql).toMatch(/has_fix = \$\d+/);
+        expect(sql.params).toContain(true);
+    });
+
+    test('filters for rows with no known fix', async () => {
+        const db = fakeDb([storedRow()]);
+
+        await repository.queryVulnerabilities({ page: 1, perPage: 25, hasFix: false });
+
+        const sql = db.selects().find((x) => /COUNT\(\*\) OVER\(\)/i.test(x.sql));
+        expect(sql.params).toContain(false);
+    });
+
+    test('omits the clause entirely when the filter is unset', async () => {
+        // `undefined` must mean "no filter", not "false" -- otherwise the
+        // default view would hide every row without a published fix.
+        const db = fakeDb([storedRow()]);
+
+        await repository.queryVulnerabilities({ page: 1, perPage: 25 });
+
+        const sql = db.selects().find((x) => /COUNT\(\*\) OVER\(\)/i.test(x.sql));
+        expect(sql.sql).not.toMatch(/has_fix =/);
+    });
+});
+
 describe('write amplification', () => {
     test('the upsert only writes rows that would actually change', async () => {
         // A poll of unchanged upstream data used to rewrite every row it

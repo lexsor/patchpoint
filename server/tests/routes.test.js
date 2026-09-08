@@ -100,6 +100,25 @@ describe('query parameter validation', () => {
         expect(typeof paramsFor().sortOrder).toBe('string');
     });
 
+    test('hasFix accepts only true/false, and unset means no filter', async () => {
+        // `undefined` must not collapse to `false`, or the default view would
+        // hide every row with no published fix -- roughly 40% of them.
+        await request(makeApp()).get('/api/vulnerabilities?hasFix=true');
+        expect(paramsFor().hasFix).toBe(true);
+
+        repository.queryVulnerabilities.mockClear();
+        await request(makeApp()).get('/api/vulnerabilities?hasFix=false');
+        expect(paramsFor().hasFix).toBe(false);
+
+        repository.queryVulnerabilities.mockClear();
+        await request(makeApp()).get('/api/vulnerabilities?hasFix=sometimes');
+        expect(paramsFor().hasFix).toBeUndefined();
+
+        repository.queryVulnerabilities.mockClear();
+        await request(makeApp()).get('/api/vulnerabilities');
+        expect(paramsFor().hasFix).toBeUndefined();
+    });
+
     test('kevFlag accepts only true/false', async () => {
         await request(makeApp()).get('/api/vulnerabilities?kevFlag=true');
         expect(paramsFor().kevFlag).toBe(true);

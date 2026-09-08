@@ -272,6 +272,7 @@ class VulnerabilityRepository {
         vendor,
         techType,
         kevFlag,
+        hasFix,
         search,
     } = {}) {
         const db = getDb();
@@ -309,6 +310,12 @@ class VulnerabilityRepository {
         if (kevFlag !== undefined) {
             whereClauses.push(`kev_flag = $${paramIndex++}`);
             params.push(kevFlag);
+        }
+        // "What can I action today?" -- the denormalised boolean rather than a
+        // jsonb probe, so the partial index on has_fix can serve it.
+        if (hasFix !== undefined) {
+            whereClauses.push(`has_fix = $${paramIndex++}`);
+            params.push(hasFix);
         }
         if (search) {
             whereClauses.push(`(

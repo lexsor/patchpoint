@@ -54,6 +54,7 @@ router.get('/vulnerabilities', async (req, res) => {
             vendor: toStringParam(req.query.vendor),
             techType: toStringParam(req.query.techType),
             kevFlag: toBoolParam(req.query.kevFlag),
+            hasFix: toBoolParam(req.query.hasFix),
             search: toStringParam(req.query.search),
         });
 

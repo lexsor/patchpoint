@@ -1,8 +1,8 @@
 # Design note: showing what fixes a CVE
 
-Status: **steps 1-3 implemented.** Plan of record for the fix-action feature.
-The `Fix` column, the detail-panel section and the "has a known fix" filter
-(steps 4-6) remain to build.
+Status: **implemented.** All six steps are built. Kept as the record of what
+was measured, what the first draft got wrong, and why the code is shaped the
+way it is.
 
 ## The ask
 
@@ -312,8 +312,13 @@ motivating request.
    four assumptions this broke.
 4. **NVD version bounds** — keep `version*` in `lib/cpe.js` and emit
    remediation entries from the CPE list.
-5. **The `Fix` column and the detail-panel Remediation section.**
-6. **The "has a known fix" filter** plus `has_fix` and its index.
+5. ~~**The `Fix` column and the detail-panel Remediation section.**~~ **DONE.**
+   The column shows three visually and textually distinct states, and
+   `summarizeVersions` collapses `13, 14, 15, 16` to `13-16` but deliberately
+   leaves `11, 12, 12L, 13` alone, since 12L is not an integer and a range
+   would misstate it.
+6. ~~**The "has a known fix" filter**~~ **DONE**, backed by `has_fix` and its
+   partial index.
 
 ## Open decisions
 
@@ -324,11 +329,18 @@ motivating request.
 - **How far back should bulletins be ingested?** All 125 months (2015+) is
   ~8-12k mappings and a one-time backfill, but pre-2018 needs the outlier
   parser. Proposal: floor at 2018-06, revisit if anyone runs Android 5.
-- **How should a CVE with many affected products present in one column?**
-  Primary-plus-count ("15.0 +3 more") is the obvious answer, but it inherits
-  the "which product is primary" ambiguity documented in `lib/cpe.js`. For
-  Android rows the bulletin entry should win the column regardless of CPE
-  frequency — the measured reason being that the frequency heuristic picks
-  Adobe or Microsoft on Android-matched CVEs.
-- **Should rows with no known fix be visually distinct?** With ~40% lacking
-  data, a blank column may read as a bug rather than an absence.
+- ~~**How should a CVE with many affected products present in one column?**~~
+  **Resolved: primary-plus-count**, where "primary" prefers the entry carrying
+  a patch level rather than the most frequent CPE. That ordering matters
+  because the frequency heuristic in `lib/cpe.js` picks Adobe or Microsoft on
+  Android-matched CVEs, so sorting by it would show an unrelated product's
+  version as the fix for an Android issue. The `+N` is explained in the cell's
+  tooltip; the detail panel lists every entry.
+- ~~**Should rows with no known fix be visually distinct?**~~ **Resolved:**
+  an em dash plus a "No fix version published" tooltip, never an empty cell.
+  It is coloured with `--text-muted` rather than `--text-dim`: the dash is the
+  cell's entire content and carries real information, and `--text-dim`
+  measures 3.93:1 against the row background in dark mode, which fails WCAG
+  AA. `--text-muted` is 7.30:1 dark and 7.24:1 light. (The `--text-dim` token
+  itself still fails AA wherever else it is used; that is pre-existing and
+  untouched here.)
