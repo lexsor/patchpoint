@@ -403,3 +403,50 @@ describe('filter option caching', () => {
         expect(db.statements.filter((s) => /SELECT DISTINCT/i.test(s.sql))).toHaveLength(4);
     });
 });
+
+
+describe('write amplification', () => {
+    test('the upsert only writes rows that would actually change', async () => {
+        // A poll of unchanged upstream data used to rewrite every row it
+        // touched: a new row version, WAL, updates to all nine indexes, and a
+        // dead tuple, per row, per cycle.
+        const db = fakeDb();
+
+        await repository.storeRecords([{ cve_id: 'CVE-2024-0001' }], 'NVD');
+
+        const sql = db.upserts()[0].sql.replace(/\s+/g, ' ');
+        expect(sql).toMatch(/ON CONFLICT \(cve_id\) DO UPDATE SET/);
+        expect(sql).toMatch(/WHERE vulnerabilities\./);
+        expect((sql.match(/IS DISTINCT FROM/g) || []).length).toBe(15);
+    });
+
+    test('updated_at is excluded from the change test', async () => {
+        // CURRENT_TIMESTAMP always differs, so including it would make every
+        // row look changed and defeat the whole guard.
+        const db = fakeDb();
+        await repository.storeRecords([{ cve_id: 'CVE-2024-0001' }], 'NVD');
+
+        const sql = db.upserts()[0].sql.replace(/\s+/g, ' ');
+        const where = sql.slice(sql.indexOf(' WHERE '));
+        expect(where).not.toMatch(/updated_at/);
+        expect(sql).toMatch(/updated_at = CURRENT_TIMESTAMP/);
+    });
+
+    test('every comparison operand is parenthesised', async () => {
+        // IS DISTINCT FROM binds tighter than OR, so the kev_flag target
+        // (`a OR b`) unparenthesised parses as
+        // `(kev_flag IS DISTINCT FROM kev_flag) OR EXCLUDED.kev_flag` — always
+        // true for a KEV row, so the skip would silently never apply to the
+        // one dataset it exists for. Valid SQL, wrong meaning.
+        const db = fakeDb();
+        await repository.storeRecords([{ cve_id: 'CVE-2024-0001' }], 'NVD');
+
+        const sql = db.upserts()[0].sql.replace(/\s+/g, ' ');
+        const where = sql.slice(sql.indexOf(' WHERE '));
+
+        // The kev_flag term must wrap its OR expression.
+        expect(where).toMatch(/kev_flag IS DISTINCT FROM \(vulnerabilities\.kev_flag OR EXCLUDED\.kev_flag\)/);
+        // And no comparison may be followed directly by a bare identifier.
+        expect(where).not.toMatch(/IS DISTINCT FROM [a-zA-Z]/);
+    });
+});

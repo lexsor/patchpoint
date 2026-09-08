@@ -31,7 +31,16 @@ async function run() {
         [since]
     );
 
-    const created = [];
+    // Match in JS, then write in batches.
+    //
+    // This loop used to issue one INSERT per match — measured at 3,390 round
+    // trips for 1,695 vulnerabilities against a two-item watchlist. Matching
+    // stays here rather than moving into the SQL because `matchWatchlistItem`
+    // is the tested definition of a match, and expressing it as a JOIN would
+    // duplicate it in a second language (and `ILIKE` would treat `%` and `_`
+    // in a user's watchlist entry as wildcards, which `String.includes` does
+    // not). The loop itself is trivial; the round trips were the cost.
+    const pending = [];
 
     for (const vuln of vulnResult.rows) {
         for (const watch of watchlist) {
@@ -46,19 +55,39 @@ async function run() {
             const message = `Vulnerability ${vuln.cve_id} matches watchlist item "${watch.item}" `
                 + `(${matchType}) from source(s): ${sources}`;
 
-            // DO NOTHING means an existing alert for this pair is left alone
-            // and RETURNING yields no row, so `created` holds only new alerts.
-            const inserted = await db.query(`
-                INSERT INTO alerts (cve_id, match_type, match_value, message)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (cve_id, match_type, match_value) DO NOTHING
-                RETURNING *
-            `, [vuln.cve_id, matchType, watch.item, message]);
-
-            if (inserted.rows.length > 0) {
-                created.push(inserted.rows[0]);
-            }
+            pending.push([vuln.cve_id, matchType, watch.item, message]);
         }
+    }
+
+    return insertAlerts(db, pending);
+}
+
+// 4 columns x 500 rows = 2000 bind parameters per statement.
+const ALERT_CHUNK_SIZE = 500;
+
+/**
+ * Insert matched alerts, skipping pairs that already exist.
+ *
+ * DO NOTHING leaves an existing alert alone and RETURNING yields no row for
+ * it, so the result contains only the alerts this pass actually created.
+ */
+async function insertAlerts(db, pending) {
+    const created = [];
+
+    for (let i = 0; i < pending.length; i += ALERT_CHUNK_SIZE) {
+        const chunk = pending.slice(i, i + ALERT_CHUNK_SIZE);
+        const valueRows = chunk
+            .map((_, r) => `($${r * 4 + 1}, $${r * 4 + 2}, $${r * 4 + 3}, $${r * 4 + 4})`)
+            .join(', ');
+
+        const inserted = await db.query(`
+            INSERT INTO alerts (cve_id, match_type, match_value, message)
+            VALUES ${valueRows}
+            ON CONFLICT (cve_id, match_type, match_value) DO NOTHING
+            RETURNING *
+        `, chunk.flat());
+
+        created.push(...inserted.rows);
     }
 
     return created;

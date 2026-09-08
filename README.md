@@ -131,6 +131,17 @@ is why the bindings above matter rather than relying on the firewall.
   rebuilding every row and losing scroll position. It now stays mounted and is
   marked `aria-busy` while a reload is in flight; the full-page spinner is
   reserved for the first load, when there is nothing to keep.
+- **Unchanged rows are not rewritten.** The upsert carries a
+  `WHERE ... IS DISTINCT FROM ...` guard, so a poll of upstream data that has
+  not changed writes nothing. Before this, every cycle rewrote every row it
+  touched — 1,695 for CISA, up to 10,000 for NVD — each one a new row version,
+  WAL, an update to all nine indexes (four of them trigram GIN) and a dead
+  tuple for vacuum.
+- **Alerts are inserted in batches.** The alert engine matched in JS and then
+  issued one INSERT per match: 3,390 round trips for 1,695 vulnerabilities
+  against a two-item watchlist. It now batches 500 rows per statement — 9
+  statements instead of 3,392, for the same result. Matching stays in JS so
+  `matchWatchlistItem` remains the single tested definition of a match.
 - **`pg_trgm` is optional.** Creating the extension needs elevated rights; if
   the database role cannot, the schema logs a notice and search falls back to
   sequential scans rather than failing to boot.

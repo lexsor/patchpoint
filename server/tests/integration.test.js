@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 
 const { mergeRecords, classifySeverity } = require('../src/models/deduplication');
-const { matchWatchlistItem } = require('../src/models/alert-engine');
+const { matchWatchlistItem, run } = require('../src/models/alert-engine');
+const { getDb } = require('../src/db/client');
 
 describe('Deduplication across sources', () => {
     test('merges one CVE seen by CISA KEV and NVD into a single record', () => {
@@ -193,3 +194,77 @@ function stripJsComments(src) {
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/^[ \t]*\/\/[^\n]*$/gm, '');
 }
+
+
+describe('alert insertion batching', () => {
+    // One INSERT per match meant 3,390 round trips for 1,695 vulnerabilities
+    // against a two-item watchlist.
+    function fakeDb(vulnCount, watchlist) {
+        const statements = [];
+        const query = jest.fn(async (sql, params = []) => {
+            statements.push({ sql: String(sql).replace(/\s+/g, ' ').trim(), params });
+            if (/FROM watchlist/i.test(sql)) return { rows: watchlist };
+            if (/FROM vulnerabilities WHERE updated_at/i.test(sql)) {
+                return {
+                    rows: Array.from({ length: vulnCount }, (_, i) => ({
+                        cve_id: `CVE-2024-${10000 + i}`,
+                        vendor: 'Acme Corp',
+                        product: 'Widget Pro',
+                        source_labels: ['CISA KEV'],
+                    })),
+                };
+            }
+            if (/INSERT INTO alerts/i.test(sql)) {
+                return { rows: Array.from({ length: params.length / 4 }, (_, i) => ({ id: i })) };
+            }
+            return { rows: [{ count: '0' }], rowCount: 0 };
+        });
+        getDb.mockReturnValue({ query });
+        return {
+            statements,
+            inserts: () => statements.filter((s) => /INSERT INTO alerts/i.test(s.sql)),
+        };
+    }
+
+    test('batches inserts instead of one round trip per match', async () => {
+        const db = fakeDb(1695, [
+            { id: 1, item: 'Acme', item_type: 'vendor' },
+            { id: 2, item: 'Widget', item_type: 'product' },
+        ]);
+
+        const created = await run();
+
+        expect(created).toHaveLength(3390);
+        // 3390 matches at 500 per statement.
+        expect(db.inserts()).toHaveLength(7);
+        expect(db.statements).toHaveLength(9);
+    });
+
+    test('still skips duplicates via ON CONFLICT DO NOTHING', async () => {
+        const db = fakeDb(2, [{ id: 1, item: 'Acme', item_type: 'vendor' }]);
+
+        await run();
+
+        expect(db.inserts()[0].sql).toMatch(/ON CONFLICT \(cve_id, match_type, match_value\) DO NOTHING/);
+        expect(db.inserts()[0].sql).toMatch(/RETURNING \*/);
+    });
+
+    test('issues no insert at all when nothing matches', async () => {
+        const db = fakeDb(50, [{ id: 1, item: 'NoSuchVendor', item_type: 'vendor' }]);
+
+        const created = await run();
+
+        expect(created).toEqual([]);
+        expect(db.inserts()).toHaveLength(0);
+    });
+
+    test('short-circuits on an empty watchlist', async () => {
+        const db = fakeDb(1695, []);
+
+        const created = await run();
+
+        expect(created).toEqual([]);
+        // Only the watchlist lookup; the vulnerability scan is skipped.
+        expect(db.statements).toHaveLength(1);
+    });
+});

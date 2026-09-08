@@ -29,11 +29,35 @@ const FILTER_OPTIONS_TTL_MS = 5 * 60 * 1000;
 let filterOptionsCache = null;
 
 /**
- * Non-empty text from the incoming row wins; otherwise the stored value is
- * kept. Guards against a source that reports a field as '' rather than NULL
- * wiping data another source already supplied.
+ * The value each column takes on conflict, as a SQL expression.
+ *
+ * Declared once and used to build both the SET list and the "did anything
+ * actually change" predicate, so the two can never drift apart.
+ *
+ * `keepText` means non-empty text from the incoming row wins, otherwise the
+ * stored value is kept -- a source that reports a field as '' rather than NULL
+ * must not wipe data another source supplied.
  */
-const keepText = (col) => `${col} = COALESCE(NULLIF(EXCLUDED.${col}, ''), vulnerabilities.${col})`;
+const keepText = (col) => `COALESCE(NULLIF(EXCLUDED.${col}, ''), vulnerabilities.${col})`;
+const keepValue = (col) => `COALESCE(EXCLUDED.${col}, vulnerabilities.${col})`;
+
+const CONFLICT_TARGETS = [
+    ['title', keepText('title')],
+    ['description', keepText('description')],
+    ['severity', keepText('severity')],
+    ['cvss_score', keepValue('cvss_score')],
+    ['cvss_vector', keepText('cvss_vector')],
+    ['published_date', keepValue('published_date')],
+    ['modified_date', keepValue('modified_date')],
+    ['source_labels', 'EXCLUDED.source_labels'],
+    ['vendor', keepText('vendor')],
+    ['product', keepText('product')],
+    ['tech_type', keepText('tech_type')],
+    ['kev_flag', 'vulnerabilities.kev_flag OR EXCLUDED.kev_flag'],
+    ['kev_date_added', keepValue('kev_date_added')],
+    ['reference_urls', 'EXCLUDED.reference_urls'],
+    ['cwes', 'EXCLUDED.cwes'],
+];
 
 function buildUpsertSql(rowCount) {
     const valueRows = [];
@@ -42,26 +66,39 @@ function buildUpsertSql(rowCount) {
         valueRows.push(`(${placeholders.join(', ')})`);
     }
 
+    const setList = CONFLICT_TARGETS.map(([col, expr]) => `${col} = ${expr}`);
+    // `updated_at` is deliberately excluded from the change test below: it
+    // always differs, so including it would make every row look changed.
+    setList.push('updated_at = CURRENT_TIMESTAMP');
+
+    // Skip rows whose stored values already equal what we would write.
+    //
+    // Without this, a poll of unchanged upstream data rewrote every row it
+    // touched -- measured at 1,695 rows per CISA cycle and up to 10,000 per
+    // NVD cycle. Each rewrite is a new row version, WAL, an update to all
+    // nine indexes (four of them trigram GIN, the costliest to maintain), and
+    // a dead tuple for vacuum. It also bumped `updated_at` table-wide, which
+    // made the alert engine's "changed in the last 24h" window match
+    // everything on every cycle.
+    //
+    // IS DISTINCT FROM rather than <> so NULLs compare correctly.
+    // The target expression MUST be parenthesised. `IS DISTINCT FROM` binds
+    // tighter than `OR`, so the kev_flag target (`a OR b`) would otherwise
+    // parse as `(kev_flag IS DISTINCT FROM kev_flag) OR EXCLUDED.kev_flag`.
+    // The left side is always false, collapsing the term to
+    // `EXCLUDED.kev_flag` — which is true for every CISA KEV row, so every
+    // one of them would still be rewritten and the skip would silently do
+    // nothing for the dataset it exists to help. Valid SQL, wrong meaning.
+    const changed = CONFLICT_TARGETS
+        .map(([col, expr]) => `vulnerabilities.${col} IS DISTINCT FROM (${expr})`)
+        .join(' OR ');
+
     return `
         INSERT INTO vulnerabilities (${SELECT_COLUMNS})
         VALUES ${valueRows.join(', ')}
         ON CONFLICT (cve_id) DO UPDATE SET
-            ${keepText('title')},
-            ${keepText('description')},
-            ${keepText('severity')},
-            cvss_score = COALESCE(EXCLUDED.cvss_score, vulnerabilities.cvss_score),
-            ${keepText('cvss_vector')},
-            published_date = COALESCE(EXCLUDED.published_date, vulnerabilities.published_date),
-            modified_date = COALESCE(EXCLUDED.modified_date, vulnerabilities.modified_date),
-            source_labels = EXCLUDED.source_labels,
-            ${keepText('vendor')},
-            ${keepText('product')},
-            ${keepText('tech_type')},
-            kev_flag = vulnerabilities.kev_flag OR EXCLUDED.kev_flag,
-            kev_date_added = COALESCE(EXCLUDED.kev_date_added, vulnerabilities.kev_date_added),
-            reference_urls = EXCLUDED.reference_urls,
-            cwes = EXCLUDED.cwes,
-            updated_at = CURRENT_TIMESTAMP
+            ${setList.join(', ')}
+        WHERE ${changed}
     `;
 }
 
