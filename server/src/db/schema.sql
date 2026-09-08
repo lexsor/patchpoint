@@ -33,8 +33,32 @@ CREATE TABLE IF NOT EXISTS vulnerabilities (
     tech_type TEXT,
     kev_flag BOOLEAN DEFAULT FALSE,
     kev_date_added DATE,
+    -- CISA's remediation deadline for federal agencies. Useful as a
+    -- prioritisation signal for everyone else.
+    kev_due_date DATE,
+    -- Tri-state, deliberately nullable. CISA publishes the string 'Known' or
+    -- 'Unknown' (measured: 354 Known, 1341 Unknown of 1695). TRUE means CISA
+    -- has observed ransomware use; NULL means CISA does not know. Mapping
+    -- 'Unknown' to FALSE would assert "not used in ransomware", which is a
+    -- claim the feed never makes.
+    kev_ransomware BOOLEAN,
+    kev_required_action TEXT,
     reference_urls TEXT DEFAULT '[]',
     cwes TEXT DEFAULT '[]',
+    -- What to upgrade to, per affected product. jsonb because entries are
+    -- unioned from several sources and the "has a known fix" filter needs a
+    -- containment test an index can serve.
+    --
+    -- Shape: [{ source, vendor, product, affected_from, affected_to, bound,
+    --           fixed_in, patch_level }]
+    --
+    -- `patch_level` is general rather than Android-specific: any vendor that
+    -- publishes dated patch levels (Patch Tuesday, Oracle CPUs) fits the same
+    -- field, and it costs nothing when null.
+    remediations JSONB DEFAULT '[]'::jsonb,
+    -- Denormalised from `remediations` so the filter is an indexed boolean
+    -- rather than a jsonb probe on every row. Maintained by the upsert.
+    has_fix BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -156,6 +180,33 @@ BEGIN
         RAISE NOTICE 'source_labels migrated to jsonb';
     END IF;
 END $$;
+
+-- Columns added for the fix-action feature. `CREATE TABLE IF NOT EXISTS` is a
+-- no-op against an existing table, so a deployment that already holds data
+-- would never receive these without an explicit ALTER. `ADD COLUMN IF NOT
+-- EXISTS` is idempotent and, for a nullable column with no default rewrite,
+-- takes only a brief ACCESS EXCLUSIVE lock rather than rewriting the table.
+ALTER TABLE vulnerabilities
+    ADD COLUMN IF NOT EXISTS kev_due_date DATE,
+    ADD COLUMN IF NOT EXISTS kev_ransomware BOOLEAN,
+    ADD COLUMN IF NOT EXISTS kev_required_action TEXT,
+    ADD COLUMN IF NOT EXISTS remediations JSONB DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS has_fix BOOLEAN DEFAULT FALSE;
+
+-- Prioritisation: "what is overdue" and "what is exploited by ransomware".
+CREATE INDEX IF NOT EXISTS idx_vuln_kev_due ON vulnerabilities(kev_due_date);
+
+-- The "has a known fix" filter. Partial, because the query is only ever
+-- `has_fix = TRUE` -- indexing the false rows would roughly double the index
+-- for an access path nothing asks for.
+CREATE INDEX IF NOT EXISTS idx_vuln_has_fix
+    ON vulnerabilities(has_fix) WHERE has_fix;
+
+-- Containment queries against remediation entries, e.g. locating every CVE
+-- fixed at a given Android patch level. jsonb_path_ops for the same reason as
+-- source_labels: containment is the only operator used.
+CREATE INDEX IF NOT EXISTS idx_vuln_remediations
+    ON vulnerabilities USING GIN (remediations jsonb_path_ops);
 
 -- Indexes superseded by the composite sort indexes above. Dropping them
 -- removes write cost without losing any access path: a range or equality test

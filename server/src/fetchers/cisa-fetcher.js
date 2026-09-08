@@ -24,6 +24,15 @@ async function fetchCisaKev() {
             shortDescription: row.shortDescription,
             dateAdded: row.dateAdded,
             cwes: row.cwes,
+            // Both feeds carry identical column names, verified against the
+            // live CSV header and JSON keys. This whitelist exists so a new
+            // upstream column cannot silently become a record field, which
+            // also means a field added here must be added to the CSV header
+            // list or it will be present in JSON mode and absent in CSV mode.
+            requiredAction: row.requiredAction,
+            dueDate: row.dueDate,
+            knownRansomwareCampaignUse: row.knownRansomwareCampaignUse,
+            notes: row.notes,
         }))
         .filter(Boolean);
 
@@ -70,6 +79,12 @@ function toRecord(item) {
         published_date: null,
         kev_flag: true,
         kev_date_added: dateAdded,
+        kev_due_date: normalizeDate(item.dueDate),
+        kev_ransomware: parseRansomwareUse(item.knownRansomwareCampaignUse),
+        kev_required_action: (item.requiredAction || '').trim(),
+        // `notes` is prose, but for 906 of 1,695 entries it contains the vendor
+        // advisory URL -- which is precisely the fix action an admin needs.
+        references: parseNoteUrls(item.notes),
         cwes: parseCwes(item.cwes),
         // CISA KEV publishes no CVSS score, so it asserts no severity. An
         // earlier version stamped every KEV record HIGH; since KEV lands
@@ -84,6 +99,58 @@ function normalizeDate(value) {
     if (!value || typeof value !== 'string') return null;
     const datePart = value.trim().split('T')[0];
     return /^\d{4}-\d{2}-\d{2}$/.test(datePart) ? datePart : null;
+}
+
+/**
+ * 'Known' -> true, 'Unknown' -> null, anything else -> null.
+ *
+ * Deliberately tri-state. CISA says 'Known' or 'Unknown' and never asserts
+ * that a vulnerability is NOT used by ransomware, so mapping 'Unknown' to
+ * false would invent a reassurance the feed does not give. NULL keeps the
+ * distinction between "no ransomware use observed" and "we don't know".
+ */
+function parseRansomwareUse(value) {
+    if (typeof value !== 'string') return null;
+    return value.trim().toLowerCase() === 'known' ? true : null;
+}
+
+// Hosts stripped from the `notes` URL list.
+//
+// nvd.nist.gov appears on all 1,695 entries and the detail panel already links
+// the NVD record directly, so keeping it would add a duplicate row to every
+// KEV reference list. cisa.gov entries are links to the binding operational
+// directives quoted in `requiredAction` -- policy boilerplate, not a fix.
+const NOTE_URL_NOISE = new Set(['nvd.nist.gov', 'cisa.gov']);
+
+/**
+ * Pull vendor advisory URLs out of the free-text `notes` field.
+ *
+ * Returns an array; the repository serializes it, so this must not hand back
+ * a pre-stringified value.
+ */
+function parseNoteUrls(notes) {
+    if (!notes || typeof notes !== 'string') return [];
+
+    // Notes are semicolon-separated prose containing bare URLs. Trailing
+    // punctuation is common, so stop at whitespace and the characters that
+    // routinely terminate a URL in a sentence.
+    const found = notes.match(/https?:\/\/[^\s;,)\]]+/g) || [];
+    const kept = new Set();
+
+    for (const raw of found) {
+        // A trailing period is sentence punctuation far more often than it is
+        // part of a path.
+        const url = raw.replace(/[.]+$/, '');
+        let host;
+        try {
+            host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+        } catch {
+            continue;
+        }
+        if (!NOTE_URL_NOISE.has(host)) kept.add(url);
+    }
+
+    return [...kept];
 }
 
 /**
@@ -109,4 +176,7 @@ function parseCwes(cwes) {
     return [...found];
 }
 
-module.exports = { fetchCisaKev, fetchCisaKevJson, parseCwes, toRecord };
+module.exports = {
+    fetchCisaKev, fetchCisaKevJson, parseCwes, toRecord,
+    parseRansomwareUse, parseNoteUrls,
+};

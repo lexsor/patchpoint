@@ -83,6 +83,11 @@ const mergeInto = (existing, incoming, sourceName) => {
         if (incoming.kev_date_added && (!existing.kev_date_added || incoming.kev_date_added > existing.kev_date_added)) {
             existing.kev_date_added = incoming.kev_date_added;
         }
+        if (incoming.kev_due_date) existing.kev_due_date = incoming.kev_due_date;
+        // Tri-state: only a positive 'Known' overwrites. `null` means CISA
+        // does not know, and must never overwrite an established true.
+        if (incoming.kev_ransomware === true) existing.kev_ransomware = true;
+        if (incoming.kev_required_action) existing.kev_required_action = incoming.kev_required_action;
     }
 
     // Union references and CWEs
@@ -92,11 +97,59 @@ const mergeInto = (existing, incoming, sourceName) => {
     const allCwes = new Set([...normalizeList(existing.cwes), ...normalizeList(incoming.cwes)]);
     existing.cwes = JSON.stringify([...allCwes]);
 
+    // Union remediations rather than overwrite them. NVD supplies CPE-derived
+    // fix versions and the Android bulletin supplies patch levels, on separate
+    // fetch cycles; last-writer-wins would make each source erase the other's
+    // remediation on every poll.
+    existing.remediations = JSON.stringify(mergeRemediationLists(
+        normalizeList(existing.remediations),
+        normalizeList(incoming.remediations),
+    ));
+
     // Keep non-empty vendor/product/tech_type
     if (!existing.vendor && incoming.vendor) existing.vendor = incoming.vendor;
     if (!existing.product && incoming.product) existing.product = incoming.product;
     if (!existing.tech_type && incoming.tech_type) existing.tech_type = incoming.tech_type;
 };
+
+/**
+ * Identity of a remediation entry: which source said it, about which product,
+ * at which patch level.
+ *
+ * `patch_level` is part of the key because one CVE is legitimately fixed at
+ * several Android patch levels across branches, and those are distinct facts
+ * rather than duplicates. `fixed_in` is deliberately NOT part of the key, so
+ * a corrected fix version from the same source replaces the stale one instead
+ * of accumulating beside it.
+ */
+const remediationKey = (entry) => JSON.stringify([
+    entry.source || '', entry.vendor || '', entry.product || '', entry.patch_level || '',
+]);
+
+/**
+ * Union two remediation lists, later entries winning on key collision.
+ *
+ * Entries are objects, so a Set cannot deduplicate them by value.
+ */
+const mergeRemediationLists = (existingList, incomingList) => {
+    const byKey = new Map();
+    for (const entry of [...existingList, ...incomingList]) {
+        if (!entry || typeof entry !== 'object') continue;
+        byKey.set(remediationKey(entry), entry);
+    }
+    return [...byKey.values()];
+};
+
+/**
+ * Does this remediation list contain an actionable fix?
+ *
+ * An entry with only an inclusive upper bound says "fixed sometime after X"
+ * without naming a version, which is not something an admin can action, so it
+ * does not count. Backs the `has_fix` column and the "has a known fix" filter.
+ */
+const hasActionableFix = (remediations) => normalizeList(remediations)
+    .some((entry) => entry && typeof entry === 'object'
+        && (Boolean(entry.fixed_in) || Boolean(entry.patch_level)));
 
 const createMergedRecord = (record, sourceName) => {
     const score = record.cvss_score != null && record.cvss_score !== ''
@@ -123,8 +176,14 @@ const createMergedRecord = (record, sourceName) => {
         tech_type: record.tech_type || '',
         kev_flag: record.kev_flag || false,
         kev_date_added: record.kev_date_added || null,
+        kev_due_date: record.kev_due_date || null,
+        // `|| null` would turn a legitimate false into null; the field is
+        // tri-state, so an explicit undefined check is required.
+        kev_ransomware: record.kev_ransomware === undefined ? null : record.kev_ransomware,
+        kev_required_action: record.kev_required_action || '',
         references: JSON.stringify(normalizeList(record.references)),
         cwes: JSON.stringify(normalizeList(record.cwes)),
+        remediations: JSON.stringify(mergeRemediationLists([], normalizeList(record.remediations))),
     };
 };
 
@@ -159,4 +218,7 @@ const normalizeList = (value) => {
     }
 };
 
-module.exports = { mergeRecords, classifySeverity, normalizeCveId, normalizeList };
+module.exports = {
+    mergeRecords, classifySeverity, normalizeCveId, normalizeList,
+    mergeRemediationLists, hasActionableFix, remediationKey,
+};

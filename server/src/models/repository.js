@@ -1,5 +1,5 @@
 const { getDb } = require('../db/client');
-const { mergeRecords, normalizeCveId } = require('./deduplication');
+const { mergeRecords, normalizeCveId, hasActionableFix } = require('./deduplication');
 
 // Column order used by the upsert. `references` is reserved in PostgreSQL, so
 // the reference list lives in `reference_urls` on the DB side and is mapped
@@ -7,10 +7,11 @@ const { mergeRecords, normalizeCveId } = require('./deduplication');
 const UPSERT_COLUMNS = [
     'cve_id', 'title', 'description', 'severity', 'cvss_score', 'cvss_vector',
     'published_date', 'modified_date', 'source_labels', 'vendor', 'product',
-    'tech_type', 'kev_flag', 'kev_date_added', 'reference_urls', 'cwes',
+    'tech_type', 'kev_flag', 'kev_date_added', 'kev_due_date', 'kev_ransomware',
+    'kev_required_action', 'reference_urls', 'cwes', 'remediations', 'has_fix',
 ];
 
-// Rows per INSERT statement. 16 columns x 400 rows = 6400 bind parameters,
+// Rows per INSERT statement. 21 columns x 400 rows = 8400 bind parameters,
 // comfortably under PostgreSQL's 65535 parameter limit.
 const UPSERT_CHUNK_SIZE = 400;
 
@@ -55,8 +56,23 @@ const CONFLICT_TARGETS = [
     ['tech_type', keepText('tech_type')],
     ['kev_flag', 'vulnerabilities.kev_flag OR EXCLUDED.kev_flag'],
     ['kev_date_added', keepValue('kev_date_added')],
+    ['kev_due_date', keepValue('kev_due_date')],
+    // Tri-state, so `OR` rather than COALESCE: TRUE must win over NULL in
+    // either direction, and `COALESCE(stored, incoming)` would instead let a
+    // stored NULL be overwritten but a stored FALSE outrank an incoming TRUE.
+    // Under `OR`, NULL OR TRUE = TRUE and NULL OR NULL = NULL, which is
+    // exactly "a positive finding sticks, ignorance never overwrites it".
+    // Subject to the same parenthesisation requirement as kev_flag below.
+    ['kev_ransomware', 'vulnerabilities.kev_ransomware OR EXCLUDED.kev_ransomware'],
+    ['kev_required_action', keepText('kev_required_action')],
     ['reference_urls', 'EXCLUDED.reference_urls'],
     ['cwes', 'EXCLUDED.cwes'],
+    // EXCLUDED already holds the union: storeRecords reads the stored row,
+    // merges the incoming record into it in JS (mergeRemediationLists), then
+    // writes the result. Unioning again in SQL would be redundant. This is the
+    // same arrangement as reference_urls and cwes above.
+    ['remediations', 'EXCLUDED.remediations'],
+    ['has_fix', 'EXCLUDED.has_fix'],
 ];
 
 function buildUpsertSql(rowCount) {
@@ -121,8 +137,15 @@ function toMergeShape(row) {
         tech_type: row.tech_type || '',
         kev_flag: row.kev_flag === true,
         kev_date_added: row.kev_date_added || null,
+        kev_due_date: row.kev_due_date || null,
+        // Tri-state: preserve null, do not coerce it to false.
+        kev_ransomware: row.kev_ransomware === undefined ? null : row.kev_ransomware,
+        kev_required_action: row.kev_required_action || '',
         references: row.reference_urls || '[]',
         cwes: row.cwes || '[]',
+        // jsonb, so the driver hands this back as a real array. The merge
+        // helpers accept either shape.
+        remediations: row.remediations || [],
     };
 }
 
@@ -157,8 +180,16 @@ function toBindParams(cveId, record) {
         record.tech_type || '',
         record.kev_flag === true,
         record.kev_date_added || null,
+        record.kev_due_date || null,
+        record.kev_ransomware === true ? true : null,
+        record.kev_required_action || '',
         record.references || '[]',
         record.cwes || '[]',
+        toJsonText(record.remediations),
+        // Derived here rather than in SQL so the boolean and the jsonb it
+        // summarises can never disagree: both are computed from the same
+        // merged record in the same pass.
+        hasActionableFix(record.remediations),
     ];
 }
 

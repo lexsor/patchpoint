@@ -1,4 +1,7 @@
-const { mergeRecords, classifySeverity, normalizeCveId } = require('../src/models/deduplication');
+const {
+    mergeRecords, classifySeverity, normalizeCveId,
+    mergeRemediationLists, hasActionableFix,
+} = require('../src/models/deduplication');
 
 describe('Deduplication Module', () => {
     describe('normalizeCveId', () => {
@@ -169,6 +172,146 @@ describe('Deduplication Module', () => {
             mergeRecords(map, [null, undefined], 'NVD');
             
             expect(map.size).toBe(0);
+        });
+    });
+});
+
+describe('remediation merging', () => {
+    const nvdEntry = {
+        source: 'NVD', vendor: 'google', product: 'android',
+        affected_to: '15.0', bound: 'exclusive', fixed_in: '15.0', patch_level: null,
+    };
+    const bulletinEntry = {
+        source: 'Android Bulletin', vendor: 'google', product: 'android',
+        fixed_in: '13, 14, 15, 16', patch_level: '2025-12-01',
+    };
+
+    describe('mergeRemediationLists', () => {
+        test('unions entries from different sources rather than overwriting', () => {
+            // The failure this prevents: NVD and the Android bulletin write the
+            // same CVE on separate fetch cycles. Last-writer-wins would make
+            // each source erase the other's remediation on every poll, so the
+            // column would flip between the two forever.
+            const merged = mergeRemediationLists([nvdEntry], [bulletinEntry]);
+
+            expect(merged).toHaveLength(2);
+            expect(merged.map((e) => e.source).sort()).toEqual(['Android Bulletin', 'NVD']);
+        });
+
+        test('replaces an entry from the same source and product', () => {
+            // A corrected fix version should supersede the stale one, not
+            // accumulate beside it, so fixed_in is not part of the key.
+            const corrected = { ...nvdEntry, fixed_in: '15.1', affected_to: '15.1' };
+            const merged = mergeRemediationLists([nvdEntry], [corrected]);
+
+            expect(merged).toHaveLength(1);
+            expect(merged[0].fixed_in).toBe('15.1');
+        });
+
+        test('keeps distinct patch levels for the same product', () => {
+            // One CVE is legitimately fixed at several Android patch levels
+            // across branches; those are distinct facts, not duplicates.
+            const march = { ...bulletinEntry, patch_level: '2025-03-01' };
+            const merged = mergeRemediationLists([bulletinEntry], [march]);
+
+            expect(merged).toHaveLength(2);
+        });
+
+        test('is order-independent in what it retains', () => {
+            const a = mergeRemediationLists([nvdEntry], [bulletinEntry]).length;
+            const b = mergeRemediationLists([bulletinEntry], [nvdEntry]).length;
+            expect(a).toBe(b);
+        });
+
+        test('ignores non-object entries', () => {
+            expect(mergeRemediationLists(['garbage', null], [bulletinEntry])).toEqual([bulletinEntry]);
+            expect(mergeRemediationLists([], [])).toEqual([]);
+        });
+    });
+
+    describe('hasActionableFix', () => {
+        test('a named fix version counts', () => {
+            expect(hasActionableFix([nvdEntry])).toBe(true);
+        });
+
+        test('a patch level counts even with no version', () => {
+            expect(hasActionableFix([{ source: 'Android Bulletin', patch_level: '2025-12-01' }])).toBe(true);
+        });
+
+        test('an inclusive upper bound alone does not count', () => {
+            // "fixed sometime after 1.5" names no version, so there is nothing
+            // an admin can action. Counting it would make the "has a known
+            // fix" filter return rows with no fix in them.
+            expect(hasActionableFix([{
+                source: 'NVD', vendor: 'a', product: 'b',
+                affected_to: '1.5', bound: 'inclusive', fixed_in: null, patch_level: null,
+            }])).toBe(false);
+        });
+
+        test('accepts a JSON string as well as an array', () => {
+            // A row read back from jsonb arrives as an array; a merged record
+            // carries a string. Both reach this function.
+            expect(hasActionableFix(JSON.stringify([nvdEntry]))).toBe(true);
+            expect(hasActionableFix('[]')).toBe(false);
+            expect(hasActionableFix(null)).toBe(false);
+        });
+    });
+
+    describe('through mergeRecords', () => {
+        test('a second source does not drop the first source remediations', () => {
+            const map = new Map();
+            mergeRecords(map, [{ cve_id: 'CVE-2024-0001', remediations: [nvdEntry] }], 'NVD');
+            mergeRecords(map, [{ cve_id: 'CVE-2024-0001', remediations: [bulletinEntry] }], 'Android Bulletin');
+
+            const merged = JSON.parse(map.get('CVE-2024-0001').remediations);
+            expect(merged).toHaveLength(2);
+        });
+
+        test('a source that supplies no remediations does not wipe them', () => {
+            // MITRE enrichment runs after NVD and carries no remediation data.
+            const map = new Map();
+            mergeRecords(map, [{ cve_id: 'CVE-2024-0001', remediations: [nvdEntry] }], 'NVD');
+            mergeRecords(map, [{ cve_id: 'CVE-2024-0001', description: 'fuller text' }], 'MITRE CVEW');
+
+            expect(JSON.parse(map.get('CVE-2024-0001').remediations)).toHaveLength(1);
+        });
+
+        test('a positive ransomware finding survives a later Unknown', () => {
+            const map = new Map();
+            mergeRecords(map, [{ cve_id: 'CVE-2024-0001', kev_flag: true, kev_ransomware: true }], 'CISA KEV');
+            mergeRecords(map, [{ cve_id: 'CVE-2024-0001', kev_flag: true, kev_ransomware: null }], 'CISA KEV');
+
+            expect(map.get('CVE-2024-0001').kev_ransomware).toBe(true);
+        });
+
+        test('ransomware stays null when no source reports Known', () => {
+            const map = new Map();
+            mergeRecords(map, [{ cve_id: 'CVE-2024-0001', kev_flag: true, kev_ransomware: null }], 'CISA KEV');
+
+            expect(map.get('CVE-2024-0001').kev_ransomware).toBeNull();
+        });
+
+        test('carries the KEV due date and required action', () => {
+            const map = new Map();
+            mergeRecords(map, [{
+                cve_id: 'CVE-2024-0001', kev_flag: true,
+                kev_due_date: '2024-07-11',
+                kev_required_action: 'Apply updates per vendor instructions.',
+            }], 'CISA KEV');
+
+            const record = map.get('CVE-2024-0001');
+            expect(record.kev_due_date).toBe('2024-07-11');
+            expect(record.kev_required_action).toBe('Apply updates per vendor instructions.');
+        });
+
+        test('a non-KEV source does not clear KEV remediation fields', () => {
+            const map = new Map();
+            mergeRecords(map, [{
+                cve_id: 'CVE-2024-0001', kev_flag: true, kev_due_date: '2024-07-11',
+            }], 'CISA KEV');
+            mergeRecords(map, [{ cve_id: 'CVE-2024-0001', cvss_score: 9.1 }], 'NVD');
+
+            expect(map.get('CVE-2024-0001').kev_due_date).toBe('2024-07-11');
         });
     });
 });

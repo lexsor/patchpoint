@@ -1,7 +1,9 @@
 jest.mock('../src/lib/http');
 
 const { httpGetText } = require('../src/lib/http');
-const { fetchCisaKev, fetchCisaKevJson, parseCwes } = require('../src/fetchers/cisa-fetcher');
+const {
+    fetchCisaKev, fetchCisaKevJson, parseCwes, parseRansomwareUse, parseNoteUrls,
+} = require('../src/fetchers/cisa-fetcher');
 const { fetchNvd } = require('../src/fetchers/nvd-fetcher');
 const { fetchMitreCvew } = require('../src/fetchers/mitre-fetcher');
 
@@ -95,6 +97,123 @@ describe('CISA KEV fetcher', () => {
         httpGetText.mockResolvedValue(ok('cveID,vendorProject\n,Nobody\nCVE-2024-1,Acme'));
         const result = await fetchCisaKev();
         expect(result.records.map(r => r.cve_id)).toEqual(['CVE-2024-1']);
+    });
+
+    describe('remediation fields', () => {
+        // Field names verified against the live feeds: the CSV header and the
+        // JSON keys are identical, and both carry requiredAction, dueDate,
+        // knownRansomwareCampaignUse and notes.
+        const KEV_CSV = [
+            'cveID,vendorProject,product,vulnerabilityName,dateAdded,shortDescription,requiredAction,dueDate,knownRansomwareCampaignUse,forensicTriage,notes,cwes',
+            'CVE-2024-21675,Atlassian,Jira,Jira RCE,2024-06-20,RCE in Jira,Apply updates per vendor instructions.,2024-07-11,Known,No,https://confluence.atlassian.com/advisory ; https://nvd.nist.gov/vuln/detail/CVE-2024-21675,CWE-94',
+        ].join('\n');
+
+        test('maps dueDate and requiredAction from the CSV feed', async () => {
+            httpGetText.mockResolvedValue(ok(KEV_CSV));
+
+            const [record] = (await fetchCisaKev()).records;
+
+            expect(record.kev_due_date).toBe('2024-07-11');
+            expect(record.kev_required_action).toBe('Apply updates per vendor instructions.');
+        });
+
+        test('the CSV whitelist passes the new fields through', async () => {
+            // fetchCisaKev hands toRecord an explicitly whitelisted subset, so
+            // a field added to toRecord but not to that list would work in
+            // JSON mode and be silently null in CSV mode.
+            httpGetText.mockResolvedValue(ok(KEV_CSV));
+
+            const [record] = (await fetchCisaKev()).records;
+
+            expect(record.kev_due_date).not.toBeNull();
+            expect(record.kev_ransomware).toBe(true);
+            expect(record.kev_required_action).not.toBe('');
+            expect(record.references).not.toEqual([]);
+        });
+
+        test('extracts the vendor advisory URL from notes and drops the noise', async () => {
+            httpGetText.mockResolvedValue(ok(KEV_CSV));
+
+            const [record] = (await fetchCisaKev()).records;
+
+            // The advisory is the fix action. nvd.nist.gov is dropped because
+            // the detail panel already links the NVD record directly.
+            expect(record.references).toEqual(['https://confluence.atlassian.com/advisory']);
+        });
+
+        test('maps the same fields from the JSON feed', async () => {
+            httpGetText.mockResolvedValue(ok(JSON.stringify({
+                vulnerabilities: [{
+                    cveID: 'CVE-2024-21675',
+                    dateAdded: '2024-06-20',
+                    requiredAction: 'Apply mitigations per vendor instructions.',
+                    dueDate: '2024-07-11',
+                    knownRansomwareCampaignUse: 'Unknown',
+                    notes: 'https://msrc.microsoft.com/update-guide/CVE-2024-21675',
+                    cwes: ['CWE-94'],
+                }],
+            })));
+
+            const [record] = (await fetchCisaKevJson()).records;
+
+            expect(record.kev_due_date).toBe('2024-07-11');
+            expect(record.kev_ransomware).toBeNull();
+            expect(record.references).toEqual(['https://msrc.microsoft.com/update-guide/CVE-2024-21675']);
+        });
+    });
+
+    describe('parseRansomwareUse', () => {
+        test('maps Known to true', () => {
+            expect(parseRansomwareUse('Known')).toBe(true);
+            expect(parseRansomwareUse('known')).toBe(true);
+        });
+
+        test('maps Unknown to null, never to false', () => {
+            // CISA never asserts that a vulnerability is NOT used by
+            // ransomware. Returning false would invent a reassurance the feed
+            // does not give, and the UI would show it as a negative finding.
+            expect(parseRansomwareUse('Unknown')).toBeNull();
+        });
+
+        test('maps absent or unexpected values to null', () => {
+            expect(parseRansomwareUse('')).toBeNull();
+            expect(parseRansomwareUse(undefined)).toBeNull();
+            expect(parseRansomwareUse(null)).toBeNull();
+            expect(parseRansomwareUse('Maybe')).toBeNull();
+        });
+    });
+
+    describe('parseNoteUrls', () => {
+        test('splits semicolon-separated URLs', () => {
+            expect(parseNoteUrls('https://a.example/x ; https://b.example/y'))
+                .toEqual(['https://a.example/x', 'https://b.example/y']);
+        });
+
+        test('drops nvd.nist.gov and cisa.gov', () => {
+            // Measured on the live feed: nvd.nist.gov appears on all 1,695
+            // entries and cisa.gov on 208, always as directive boilerplate.
+            const notes = 'https://nvd.nist.gov/vuln/detail/CVE-2024-1 ; '
+                + 'https://www.cisa.gov/news-events/directives/bod-26-04 ; '
+                + 'https://support.apple.com/en-us/106345';
+            expect(parseNoteUrls(notes)).toEqual(['https://support.apple.com/en-us/106345']);
+        });
+
+        test('strips trailing sentence punctuation', () => {
+            expect(parseNoteUrls('See https://a.example/advisory.')).toEqual(['https://a.example/advisory']);
+        });
+
+        test('deduplicates and survives prose with no URLs', () => {
+            expect(parseNoteUrls('https://a.example/x ; https://a.example/x')).toEqual(['https://a.example/x']);
+            expect(parseNoteUrls('Apply updates per vendor instructions.')).toEqual([]);
+            expect(parseNoteUrls('')).toEqual([]);
+            expect(parseNoteUrls(null)).toEqual([]);
+        });
+
+        test('returns an array, not a JSON string', () => {
+            // The repository serializes this field; a pre-stringified value
+            // would be double-encoded.
+            expect(Array.isArray(parseNoteUrls('https://a.example/x'))).toBe(true);
+        });
     });
 
     describe('parseCwes', () => {

@@ -3,11 +3,22 @@ jest.mock('../src/db/client');
 const { getDb } = require('../src/db/client');
 const repository = require('../src/models/repository');
 
-const UPSERT_COLUMNS = [
-    'cve_id', 'title', 'description', 'severity', 'cvss_score', 'cvss_vector',
-    'published_date', 'modified_date', 'source_labels', 'vendor', 'product',
-    'tech_type', 'kev_flag', 'kev_date_added', 'reference_urls', 'cwes',
-];
+/**
+ * The upsert's column order, read out of the statement under test.
+ *
+ * This file used to keep its own copy of the list from repository.js. When
+ * columns were added there the copy went stale, and because the decode below
+ * is positional it then silently read the WRONG column: asserting on
+ * `reference_urls` returned the value of `kev_due_date`, so the suite failed
+ * with "expected ['https://...'], received null" and pointed at reference
+ * mapping rather than at the drift that actually caused it. Deriving the
+ * order from the emitted SQL cannot drift.
+ */
+function upsertColumns(upsert) {
+    const match = /INSERT INTO vulnerabilities \(([^)]+)\)/i.exec(upsert.sql);
+    if (!match) throw new Error('could not read the column list out of the upsert SQL');
+    return match[1].split(',').map((col) => col.trim());
+}
 
 /**
  * Stand-in for a pooled client that records every statement and answers the
@@ -49,8 +60,12 @@ function fakeDb(tableRows = []) {
 
 /** Read a column out of an upsert's flat parameter list, for row `rowIndex`. */
 function boundValue(upsert, rowIndex, column) {
-    const offset = rowIndex * UPSERT_COLUMNS.length + UPSERT_COLUMNS.indexOf(column);
-    return upsert.params[offset];
+    const columns = upsertColumns(upsert);
+    const index = columns.indexOf(column);
+    // Fail loudly rather than decoding at index -1, which silently returns
+    // the last parameter of the previous row.
+    if (index === -1) throw new Error(`column "${column}" is not in the upsert`);
+    return upsert.params[rowIndex * columns.length + index];
 }
 
 function storedRow(overrides = {}) {
@@ -103,7 +118,7 @@ describe('repository.storeRecords', () => {
         expect(stored).toBe(1);
         const upserts = db.upserts();
         expect(upserts).toHaveLength(1);
-        expect(upserts[0].params).toHaveLength(UPSERT_COLUMNS.length);
+        expect(upserts[0].params).toHaveLength(upsertColumns(upserts[0]).length);
         expect(boundValue(upserts[0], 0, 'cve_id')).toBe('CVE-2024-0002');
     });
 
@@ -168,6 +183,86 @@ describe('repository.storeRecords', () => {
         expect(JSON.parse(boundValue(upsert, 0, 'reference_urls'))).toEqual(['https://example.com/x']);
     });
 
+    test('serializes remediations as JSON text, not a PostgreSQL array literal', async () => {
+        // node-postgres renders a JS array as {a,b}, which jsonb rejects.
+        const db = fakeDb();
+
+        await repository.storeRecords([{
+            cve_id: 'CVE-2024-9001',
+            remediations: [{ source: 'NVD', vendor: 'google', product: 'android', fixed_in: '15.0' }],
+        }], 'NVD');
+
+        const value = boundValue(db.upserts()[0], 0, 'remediations');
+        expect(typeof value).toBe('string');
+        expect(JSON.parse(value)[0].fixed_in).toBe('15.0');
+    });
+
+    test('derives has_fix from the merged remediations', async () => {
+        const db = fakeDb();
+
+        await repository.storeRecords([{
+            cve_id: 'CVE-2024-9002',
+            remediations: [{ source: 'NVD', fixed_in: '15.0' }],
+        }], 'NVD');
+
+        expect(boundValue(db.upserts()[0], 0, 'has_fix')).toBe(true);
+    });
+
+    test('has_fix is false when no remediation names a version or patch level', async () => {
+        const db = fakeDb();
+
+        await repository.storeRecords([{
+            cve_id: 'CVE-2024-9003',
+            remediations: [{ source: 'NVD', affected_to: '1.5', bound: 'inclusive' }],
+        }], 'NVD');
+
+        expect(boundValue(db.upserts()[0], 0, 'has_fix')).toBe(false);
+    });
+
+    test('has_fix reflects remediations merged in from the stored row', async () => {
+        // The derived boolean and the jsonb it summarises must agree. If
+        // has_fix were computed from only the incoming record, a source that
+        // carries no remediation would write has_fix=false over a row that
+        // already had a fix.
+        const db = fakeDb([storedRow({
+            cve_id: 'CVE-2024-9004',
+            remediations: [{ source: 'NVD', vendor: 'google', product: 'android', fixed_in: '15.0' }],
+        })]);
+
+        await repository.storeRecords([{ cve_id: 'CVE-2024-9004', description: 'fuller text' }], 'MITRE CVEW');
+
+        const upsert = db.upserts()[0];
+        expect(JSON.parse(boundValue(upsert, 0, 'remediations'))).toHaveLength(1);
+        expect(boundValue(upsert, 0, 'has_fix')).toBe(true);
+    });
+
+    test('binds the KEV remediation fields', async () => {
+        const db = fakeDb();
+
+        await repository.storeRecords([{
+            cve_id: 'CVE-2024-9005',
+            kev_flag: true,
+            kev_due_date: '2024-07-11',
+            kev_ransomware: true,
+            kev_required_action: 'Apply updates per vendor instructions.',
+        }], 'CISA KEV');
+
+        const upsert = db.upserts()[0];
+        expect(boundValue(upsert, 0, 'kev_due_date')).toBe('2024-07-11');
+        expect(boundValue(upsert, 0, 'kev_ransomware')).toBe(true);
+        expect(boundValue(upsert, 0, 'kev_required_action')).toContain('Apply updates');
+    });
+
+    test('binds an unknown ransomware status as null, never false', async () => {
+        // The column is tri-state. Binding false would assert "not used in
+        // ransomware", which CISA never says.
+        const db = fakeDb();
+
+        await repository.storeRecords([{ cve_id: 'CVE-2024-9006', kev_flag: true }], 'CISA KEV');
+
+        expect(boundValue(db.upserts()[0], 0, 'kev_ransomware')).toBeNull();
+    });
+
     test('serializes array cwes rather than handing an array to the driver', async () => {
         const db = fakeDb();
 
@@ -189,7 +284,7 @@ describe('repository.storeRecords', () => {
         expect(stored).toBe(850);
         // 400 + 400 + 50
         expect(db.upserts()).toHaveLength(3);
-        expect(db.upserts()[2].params).toHaveLength(50 * UPSERT_COLUMNS.length);
+        expect(db.upserts()[2].params).toHaveLength(50 * upsertColumns(db.upserts()[2]).length);
     });
 
     test('commits once and releases the client', async () => {
@@ -405,6 +500,44 @@ describe('filter option caching', () => {
 });
 
 
+describe('remediation fields reach the API', () => {
+    test('the list query carries remediations, has_fix and the KEV fields', async () => {
+        // The detail panel expands with no per-row request, which only holds
+        // if the list response already contains every field it renders. The
+        // row mapping strips only total_count, so a new column reaches the
+        // client automatically -- this test is what would catch a future
+        // whitelist being introduced there.
+        const db = fakeDb([storedRow({
+            remediations: [{ source: 'NVD', vendor: 'google', product: 'android', fixed_in: '15.0' }],
+            has_fix: true,
+            kev_due_date: '2024-07-11',
+            kev_ransomware: true,
+            kev_required_action: 'Apply updates per vendor instructions.',
+        })]);
+
+        const { data } = await repository.queryVulnerabilities({ page: 1, perPage: 25 });
+
+        expect(data).toHaveLength(1);
+        expect(data[0].remediations[0].fixed_in).toBe('15.0');
+        expect(data[0].has_fix).toBe(true);
+        expect(data[0].kev_due_date).toBe('2024-07-11');
+        expect(data[0].kev_ransomware).toBe(true);
+        expect(data[0].kev_required_action).toContain('Apply updates');
+        expect(data[0].total_count).toBeUndefined();
+    });
+
+    test('the SELECT names the new columns', async () => {
+        const db = fakeDb([storedRow()]);
+
+        await repository.queryVulnerabilities({ page: 1, perPage: 25 });
+
+        const sql = db.selects().find((s) => /COUNT\(\*\) OVER\(\)/i.test(s.sql)).sql;
+        for (const col of ['remediations', 'has_fix', 'kev_due_date', 'kev_ransomware', 'kev_required_action']) {
+            expect(sql).toContain(col);
+        }
+    });
+});
+
 describe('write amplification', () => {
     test('the upsert only writes rows that would actually change', async () => {
         // A poll of unchanged upstream data used to rewrite every row it
@@ -414,10 +547,36 @@ describe('write amplification', () => {
 
         await repository.storeRecords([{ cve_id: 'CVE-2024-0001' }], 'NVD');
 
-        const sql = db.upserts()[0].sql.replace(/\s+/g, ' ');
+        const upsert = db.upserts()[0];
+        const sql = upsert.sql.replace(/\s+/g, ' ');
         expect(sql).toMatch(/ON CONFLICT \(cve_id\) DO UPDATE SET/);
         expect(sql).toMatch(/WHERE vulnerabilities\./);
-        expect((sql.match(/IS DISTINCT FROM/g) || []).length).toBe(15);
+
+        // Every column except the conflict key itself must appear in the
+        // change test. Asserting the count against the column list rather
+        // than a literal is what makes this catch a column that was added to
+        // the insert but forgotten in CONFLICT_TARGETS -- such a column is
+        // never written on conflict, which is silent data loss.
+        const expected = upsertColumns(upsert).filter((col) => col !== 'cve_id').length;
+        expect((sql.match(/IS DISTINCT FROM/g) || []).length).toBe(expected);
+    });
+
+    test('every inserted column has a conflict target', async () => {
+        // The same invariant stated directly against the SET list, so a
+        // failure names the offending column instead of just a count.
+        const db = fakeDb();
+
+        await repository.storeRecords([{ cve_id: 'CVE-2024-0001' }], 'NVD');
+
+        const upsert = db.upserts()[0];
+        const setClause = /DO UPDATE SET([\s\S]*?)WHERE /.exec(upsert.sql)[1];
+        const assigned = new Set(
+            [...setClause.matchAll(/(?:^|,)\s*([a-z_]+)\s*=/g)].map((m) => m[1]),
+        );
+
+        const missing = upsertColumns(upsert)
+            .filter((col) => col !== 'cve_id' && !assigned.has(col));
+        expect(missing).toEqual([]);
     });
 
     test('updated_at is excluded from the change test', async () => {
