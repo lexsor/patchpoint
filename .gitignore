@@ -9,6 +9,14 @@ yarn-error.log*
 .env.local
 .env.*.local
 
+# Loose credential files. NVD_API.txt was committed once by a `git add -A`
+# that swept up an untracked file; the key had to be rotated.
+NVD_API.txt
+*api*key*.txt
+*secret*.txt
+*.key
+*.pem
+
 # Build output
 dist/
 build/

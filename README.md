@@ -331,6 +331,15 @@ cd server && npm test -- --testPathPattern=repository
 | `routes.test.js` | Route ordering, query parameter clamping, fetch/alert endpoints |
 | `integration.test.js` | Cross-source merge, watchlist matching, SQL keyword guards |
 
+## Planned
+
+- **Remediation / fix version** — showing what to update to, not just the
+  finding. Investigated with measured feasibility in
+  [`docs/fix-version-design.md`](docs/fix-version-design.md): about 55-58% of
+  CVEs can be given an exact "fixed in" version from NVD data we already
+  fetch, but Android *security patch level* granularity would need Google's
+  bulletins as a new source.
+
 ## Non-Goals
 
 - Real-time WebSocket updates (polling is sufficient)
