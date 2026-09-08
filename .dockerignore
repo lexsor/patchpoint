@@ -1,0 +1,26 @@
+# Build-context exclusions.
+#
+# Without this file the whole repo root is uploaded to the Docker daemon, and
+# `COPY client/ ./` in Dockerfile.client copied the build host's own
+# node_modules straight over the `npm ci` tree created two lines earlier --
+# silently discarding the lockfile-pinned install and resolving Vite and every
+# plugin from whatever happened to be on the developer's machine.
+**/node_modules
+**/dist
+**/build
+**/coverage
+
+# Secrets and local overrides must never enter the build context.
+.env
+.env.*
+!.env.example
+docker-compose.override.yml
+
+# History and tooling: large, and nothing in a build needs them.
+.git
+.gitignore
+.vscode
+.idea
+**/npm-debug.log*
+**/*.md
+!README.md

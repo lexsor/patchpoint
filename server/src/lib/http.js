@@ -6,57 +6,55 @@ const DEFAULT_TIMEOUT_MS = 60000;
 const MAX_REDIRECTS = 5;
 
 /**
- * Is `candidate` the same site as `origin`, comparing registrable domain?
+ * May this redirect be followed, and may the caller's headers travel with it?
  *
- * Crude last-two-labels comparison, which is all that is needed for the three
- * fixed government feeds: it permits www.cisa.gov -> cisa.gov and CDN
- * subdomains, while refusing a hop to an unrelated host.
- */
-function isSameSite(candidate, origin) {
-    const a = String(candidate).toLowerCase();
-    const b = String(origin).toLowerCase();
-    if (a === b) return true;
-
-    // An IP literal has no registrable domain, so only exact equality counts.
-    // Comparing "last two labels" of an address would be meaningless.
-    const isIpish = (host) => /^[0-9.]+$/.test(host) || host.includes(':');
-    if (isIpish(a) || isIpish(b)) return false;
-
-    const tail = (host) => host.split('.').slice(-2).join('.');
-    return tail(a) === tail(b);
-}
-
-/**
- * May this redirect be followed?
+ * Three rules, all required:
+ *  - Scheme must be http or https.
+ *  - No protocol downgrade: a chain that started on https stays on https.
+ *  - The host must be EXACTLY the host the chain started on, or explicitly
+ *    allowlisted by the caller.
  *
- * Two independent rules, both required:
- *  - No protocol downgrade. A chain that started on https must stay on https;
- *    anything other than http/https is refused outright.
- *  - No host change, except to an explicitly allowlisted host. The redirect
- *    target is chosen by the remote server, so it is untrusted input — this is
- *    what stops a hijacked feed pointing the fetch at an internal address.
+ * The host rule used to compare registrable domains (the last two labels),
+ * which had two problems. It let a redirect to any `*.nist.gov` host count as
+ * same-site and therefore receive the caller's headers -- including the NVD
+ * API key -- so one subdomain takeover under that zone would have collected
+ * it. And "last two labels" is wrong for multi-part public suffixes, where
+ * `foo.co.uk` and `bar.co.uk` would have compared equal. Exact matching has
+ * neither problem and costs nothing: none of the three feeds redirects at all
+ * (measured), so there is no legitimate hop to accommodate.
+ *
+ * `allowedHosts` is the deliberate escape hatch. Failing closed is only
+ * operationally acceptable if there is a way to open it: if a feed ever starts
+ * redirecting to a CDN, the refusal names the host and an operator can add it
+ * explicitly rather than the fetcher silently following.
  *
  * Exported for testing: the decision matrix is worth asserting directly
  * rather than only through a live socket.
  */
 function isRedirectAllowed(next, { chainOrigin, originProtocol, allowedHosts = null }) {
     const url = next instanceof URL ? next : new URL(next);
+    const host = url.hostname.toLowerCase();
+    const origin = String(chainOrigin).toLowerCase();
 
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
         return { allowed: false, reason: `unsupported scheme ${url.protocol}` };
     }
     if (originProtocol === 'https:' && url.protocol !== 'https:') {
-        return { allowed: false, reason: `insecure redirect to ${url.protocol}//${url.hostname}` };
+        return { allowed: false, reason: `insecure redirect to ${url.protocol}//${host}` };
     }
 
-    const sameSite = isSameSite(url.hostname, chainOrigin);
-    if (!sameSite && !(Array.isArray(allowedHosts) && allowedHosts.includes(url.hostname))) {
-        return { allowed: false, reason: `cross-host redirect to ${url.hostname}` };
+    const sameHost = host === origin;
+    const allowlisted = Array.isArray(allowedHosts)
+        && allowedHosts.some((h) => String(h).toLowerCase() === host);
+
+    if (!sameHost && !allowlisted) {
+        return { allowed: false, reason: `cross-host redirect to ${host}` };
     }
 
-    // Caller headers (which may carry an API key) travel only within the site
-    // the chain started on.
-    return { allowed: true, forwardHeaders: sameSite };
+    // Request headers may carry a secret (the NVD API key), so they travel
+    // only back to the exact host that was originally addressed. An
+    // allowlisted hop is still a different operator and gets nothing.
+    return { allowed: true, forwardHeaders: sameHost };
 }
 
 /**
@@ -149,4 +147,4 @@ function httpGetText(url, {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-module.exports = { httpGetText, sleep, isRedirectAllowed, isSameSite };
+module.exports = { httpGetText, sleep, isRedirectAllowed };

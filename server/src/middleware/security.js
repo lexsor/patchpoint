@@ -52,14 +52,22 @@ function corsOptions(env = process.env) {
  * Reject cross-site state-changing requests.
  *
  * A tightened CORS policy alone does not cover this. `POST /api/fetch` reads
- * no request body, which makes it a CORS "simple request" — a plain
+ * no request body, which makes it a CORS "simple request" -- a plain
  * `<form method="POST">` on any site reaches it without a preflight, so no
- * origin check is ever consulted. `Sec-Fetch-Site` is set by the browser and
- * cannot be spoofed by page script, so it is the reliable signal here.
+ * origin check is ever consulted.
  *
- * Non-browser clients (curl, scripts, the container healthcheck) send no
- * Sec-Fetch-Site header and are unaffected; this closes browser-driven CSRF
- * without breaking automation.
+ * Two signals, checked in order of trustworthiness:
+ *
+ *  - `Sec-Fetch-Site` is set by the browser and cannot be forged by page
+ *    script, so it is preferred where present.
+ *  - `Origin` is the fallback. Browsers that predate Sec-Fetch-Site (Safari
+ *    <= 16.3, Firefox < 90) still send Origin on a cross-origin form POST, so
+ *    without this fallback the guard failed open on exactly those browsers and
+ *    `POST /api/fetch` remained reachable from any page.
+ *
+ * A request carrying neither header is not coming from a browser (curl, a
+ * script, the container healthcheck) and is allowed through, so automation is
+ * unaffected.
  */
 function crossSiteGuard(req, res, next) {
     if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
@@ -67,7 +75,15 @@ function crossSiteGuard(req, res, next) {
     }
 
     const site = req.get('Sec-Fetch-Site');
-    if (site && site !== 'same-origin' && site !== 'none') {
+    if (site) {
+        if (site !== 'same-origin' && site !== 'none') {
+            return res.status(403).json({ error: 'Cross-site request rejected' });
+        }
+        return next();
+    }
+
+    const origin = req.get('Origin');
+    if (origin && !allowedOrigins().includes(origin)) {
         return res.status(403).json({ error: 'Cross-site request rejected' });
     }
 

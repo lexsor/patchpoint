@@ -6,8 +6,14 @@
  * dependency in the bundle for that.
  */
 
-// Same-origin by default: in dev Vite proxies /api to the backend, in
-// production nginx does. VITE_API_BASE overrides it for a split deployment.
+// Same-origin: in dev Vite proxies /api to the backend, in production nginx
+// does.
+//
+// VITE_API_BASE can point this at another origin, but note that the CSP in
+// nginx-security-headers.conf sets `connect-src 'self'`, which blocks
+// cross-origin API calls — widen that directive as well, deliberately, or the
+// split deployment will fail at runtime with a CSP violation rather than a
+// network error.
 const BASE = import.meta.env.VITE_API_BASE || '';
 
 const DEFAULT_TIMEOUT_MS = 30000;

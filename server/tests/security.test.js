@@ -5,7 +5,7 @@ const request = require('supertest');
 
 const { corsOptions, crossSiteGuard, securityHeaders, allowedOrigins } = require('../src/middleware/security');
 const { publicError } = require('../src/models/fetcher-orchestrator');
-const { httpGetText, isRedirectAllowed, isSameSite } = require('../src/lib/http');
+const { httpGetText, isRedirectAllowed } = require('../src/lib/http');
 
 /**
  * Builds the same middleware stack index.js installs, so the policy is tested
@@ -106,8 +106,30 @@ describe('cross-site request guard', () => {
         expect(res.status).toBe(200);
     });
 
-    test('allows clients that send no Sec-Fetch-Site (curl, scripts)', async () => {
+    test('allows clients that send neither header (curl, scripts)', async () => {
         const res = await request(makeApp()).post('/api/thing');
+        expect(res.status).toBe(200);
+    });
+
+    test('falls back to Origin when Sec-Fetch-Site is absent', async () => {
+        // Safari <= 16.3 and Firefox < 90 send no Sec-Fetch-Site, so without
+        // this fallback the guard failed open on exactly those browsers and a
+        // cross-origin form POST to /api/fetch went through.
+        const res = await request(makeApp()).post('/api/thing').set('Origin', 'https://evil.example');
+        expect(res.status).toBe(403);
+    });
+
+    test('allows an allowlisted Origin when Sec-Fetch-Site is absent', async () => {
+        const res = await request(makeApp()).post('/api/thing').set('Origin', 'http://localhost:3000');
+        expect(res.status).toBe(200);
+    });
+
+    test('prefers Sec-Fetch-Site over Origin when both are present', async () => {
+        // Sec-Fetch-Site cannot be forged by page script, so it wins.
+        const res = await request(makeApp())
+            .post('/api/thing')
+            .set('Sec-Fetch-Site', 'same-origin')
+            .set('Origin', 'https://evil.example');
         expect(res.status).toBe(200);
     });
 
@@ -217,8 +239,27 @@ describe('redirect handling in httpGetText', () => {
             expect(v.forwardHeaders).toBe(true);
         });
 
-        test('allows a sibling subdomain', () => {
-            expect(isRedirectAllowed('https://cisa.gov/x', from('https:', 'www.cisa.gov')).allowed).toBe(true);
+        test('refuses a sibling subdomain, and never forwards headers off-host', () => {
+            // This used to be allowed by a registrable-domain comparison, and
+            // with it went the caller's headers -- so a redirect to any
+            // *.nist.gov host would have received the NVD API key. One
+            // subdomain takeover in that zone was enough to collect it.
+            const v = isRedirectAllowed('https://evil.nist.gov/x', from('https:', 'services.nvd.nist.gov'));
+            expect(v.allowed).toBe(false);
+            expect(v.reason).toMatch(/cross-host/i);
+        });
+
+        test('refuses the parent domain', () => {
+            expect(isRedirectAllowed('https://nist.gov/x', from('https:', 'services.nvd.nist.gov')).allowed).toBe(false);
+        });
+
+        test('is not fooled by a multi-part public suffix', () => {
+            // "last two labels" made foo.co.uk and bar.co.uk the same site.
+            expect(isRedirectAllowed('https://bar.co.uk/x', from('https:', 'foo.co.uk')).allowed).toBe(false);
+        });
+
+        test('matches the host case-insensitively', () => {
+            expect(isRedirectAllowed('https://WWW.CISA.GOV/x', from('https:', 'www.cisa.gov')).allowed).toBe(true);
         });
 
         test('refuses an https to http downgrade', () => {
@@ -252,12 +293,10 @@ describe('redirect handling in httpGetText', () => {
             expect(v.forwardHeaders).toBe(false);
         });
 
-        test('treats IP literals as equal only when identical', () => {
-            // "last two labels" is meaningless for an address, so 10.0.0.1 and
-            // 10.0.0.2 must not count as the same site.
-            expect(isSameSite('127.0.0.1', '127.0.0.1')).toBe(true);
-            expect(isSameSite('10.0.0.1', '10.0.0.2')).toBe(false);
-            expect(isSameSite('169.254.169.254', '127.0.0.1')).toBe(false);
+        test('treats IP literals like any other host: exact match only', () => {
+            expect(isRedirectAllowed('http://127.0.0.1:9/x', from('http:', '127.0.0.1')).allowed).toBe(true);
+            expect(isRedirectAllowed('http://10.0.0.2/x', from('http:', '10.0.0.1')).allowed).toBe(false);
+            expect(isRedirectAllowed('http://169.254.169.254/x', from('http:', '127.0.0.1')).allowed).toBe(false);
         });
     });
 
