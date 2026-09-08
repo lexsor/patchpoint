@@ -1,8 +1,17 @@
 # Design note: showing what fixes a CVE
 
-Status: **implemented.** All six steps are built. Kept as the record of what
-was measured, what the first draft got wrong, and why the code is shaped the
-way it is.
+Status: **steps 1-3, 5 and 6 implemented. STEP 4 IS OUTSTANDING.**
+
+Step 4 is the NVD version-bound path, and without it the `Fix` column is
+populated for Android CVEs only. NVD publishes an exact `versionEndExcluding`
+for ~57% of CVEs generally, which is the Windows / Linux / networking fleet,
+and none of it currently reaches the `remediations` column: `lib/cpe.js` still
+discards the `version*` fields on each `cpeMatch`. Everything downstream --
+the column, the detail panel, the filter, the merge, the schema -- is built
+and waiting for it.
+
+Otherwise kept as the record of what was measured, what the first draft got
+wrong, and why the code is shaped the way it is.
 
 ## The ask
 
@@ -310,8 +319,18 @@ motivating request.
    months, per-month fetch with a revision re-check, header-driven table
    parsing, guarded and fixture-tested. See the findings section above for the
    four assumptions this broke.
-4. **NVD version bounds** — keep `version*` in `lib/cpe.js` and emit
-   remediation entries from the CPE list.
+4. **NVD version bounds — NOT DONE, the remaining work.** Keep the
+   `version*` fields in `lib/cpe.js` and emit remediation entries from the CPE
+   list. Note that `describeFromCpe` reaches the list through
+   `collectCpeCriteria`, which returns only the `criteria` **string** from each
+   `cpeMatch` and so drops the sibling version fields; that helper must either
+   return the whole match object or gain a parallel one, and its current
+   signature is asserted by `server/tests/cpe.test.js`. Emit one entry per
+   distinct (vendor, product, range), deduplicating hard -- a CVE with 163 CPE
+   entries produces many near-identical ranges and the panel needs a handful.
+   Map `versionEndExcluding` to `fixed_in`, and `versionEndIncluding` to
+   `affected_to` with `bound: 'inclusive'` (the UI already renders that as
+   `> X` and excludes it from `has_fix`).
 5. ~~**The `Fix` column and the detail-panel Remediation section.**~~ **DONE.**
    The column shows three visually and textually distinct states, and
    `summarizeVersions` collapses `13, 14, 15, 16` to `13-16` but deliberately
