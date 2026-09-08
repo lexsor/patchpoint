@@ -1,7 +1,8 @@
 # Design note: showing what fixes a CVE
 
-Status: **investigated, not implemented.** Plan of record for the fix-action
-feature.
+Status: **steps 1-3 implemented.** Plan of record for the fix-action feature.
+The `Fix` column, the detail-panel section and the "has a known fix" filter
+(steps 4-6) remain to build.
 
 ## The ask
 
@@ -101,11 +102,12 @@ GET https://source.android.com/docs/security/bulletin/2025-12-01
 125 months x ~40-100 CVEs is roughly **8,000-12,000 CVE-to-patch-level
 mappings** — a decade of Android remediation data, none of which NVD has.
 
-The patch level comes from the URL; the versions come from the row. Together
-they answer the ask exactly:
+The versions come from the row and the patch level from the page's own prose
+(**not** from the URL — see finding 1 below, which corrects what this note
+originally said). Together they answer the ask exactly:
 
 > CVE-2025-22420 — fixed in Android 13, 14, 15, 16 at security patch level
-> 2025-12-01
+> 2025-12-05
 
 #### Parse by header, never by column position
 
@@ -141,12 +143,11 @@ Fragility is the real cost. Guards required:
 
 - Select tables and columns **by header text**, so a new or reordered column
   cannot corrupt existing fields.
-- Treat *HTTP 200 that yields zero CVE rows* as a layout change and fail
-  loudly, never as an empty month. That is the signature of a restructure.
 - Pin a saved real bulletin page as a test fixture.
-- Bulletins never change once published, so store per-month and fetch only
-  months not already stored. One index fetch per cycle, and roughly zero
-  bulletin fetches in the steady state.
+- ~~Treat HTTP 200 with zero CVE rows as a layout change.~~ **Wrong as
+  written** — two real bulletins list no CVEs at all. Corrected in finding 4.
+- ~~Bulletins never change once published, so fetch only unseen months.~~
+  **Wrong** — they are revised after publication. Corrected in finding 3.
 
 ### CISA KEV — remediation deadline, not a version
 
@@ -246,20 +247,69 @@ is the natural home.
   and ransomware flag.
 - **A "has a known fix" filter** — the query an admin actually wants.
 
+## What the bulletin implementation actually found
+
+Steps 1-3 are built. Parsing all 91 supported bulletins broke four assumptions
+in the plan above, each of which had looked safe against a smaller sample.
+Recording them because they are the reason the parser is shaped as it is.
+
+**1. The patch level is not derivable from the URL, and not always `-05`.**
+The plan said the patch level "comes from the URL". It does not: bulletins are
+published at slug `YYYY-MM-01` but state their remediation level in prose.
+Across 91 months: 87 state `-05`, one states `-01` (2025-11), and three state
+`-06` (2019-10, 2021-11, 2023-10). Using the slug would tell an admin sitting
+on `2025-12-01` they were covered by the December bulletin when they are not.
+The value has to be read and can only be validated to the month.
+
+**2. The wording varies.** 2019-06 says "or higher" where every neighbouring
+month says "or later". One bulletin in 91.
+
+**3. Bulletins are not immutable.** The note claimed they "never change once
+published". Six of eight sampled carried an `Updated` date, and the December
+2025 bulletin was still being revised in March 2026. So "fetch only unseen
+months" would freeze stale data; the fetcher stores a revision marker and
+re-checks the three newest months every cycle.
+
+**4. A bulletin can legitimately contain zero CVEs.** 2025-07 and 2025-10 list
+none. July says so outright: *"There are no Android security patches in the
+July 2025 Android Security Bulletin."* The plan's guard -- treat HTTP 200 with
+no CVEs as a layout change -- turned that real month into a hard failure. The
+guard now discriminates on whether CVE ids appear anywhere in the document: if
+none do, zero is the honest answer; if they do but no table parses, the layout
+changed. The same discriminator applies to the versions column.
+
+Coverage achieved, measured over all 91 months:
+
+```
+months parsed            91/91
+CVEs with a patch level  3,728
+...also with AOSP versions  1,480  (40%)
+bulletins with no CVEs        2
+```
+
+The other 60% come from the vendor-component tables (Qualcomm, MediaTek and
+others), which state a patch level but no AOSP version. Those are real fixes
+and are kept -- discarding them would throw away more than half of every
+bulletin. They are not attributed to `google:android`, since they are not
+Google's components.
+
 ## Order of work
 
 Revised from the first draft: the bulletin source moves from last to second,
 because the correction above shows it is the only source that serves the
 motivating request.
 
-1. **KEV fields** (`dueDate`, `knownRansomwareCampaignUse`, `requiredAction`).
-   Small, self-contained, immediately useful, independent of everything else.
-2. **The `remediations` column, migration and merge semantics.** Schema first,
-   since both ingest paths below write it.
-3. **The Android bulletin source.** Index fetch to enumerate months, per-month
-   fetch of unseen bulletins, header-driven table parsing to
-   `(cve_id, patch_level, affected_versions[])`, guarded and fixture-tested per
-   above. This is what delivers the actual ask.
+1. ~~**KEV fields**~~ **DONE.** `dueDate`, `knownRansomwareCampaignUse` (as a
+   nullable tri-state, since CISA says 'Known'/'Unknown' and never asserts the
+   negative) and `requiredAction`. Also extracts the vendor advisory URL from
+   `notes`, present on 906 of 1,695 entries.
+2. ~~**The `remediations` column, migration and merge semantics.**~~ **DONE.**
+   jsonb, unioned on `(source, vendor, product, patch_level)`, with `has_fix`
+   denormalised and partially indexed.
+3. ~~**The Android bulletin source.**~~ **DONE.** Index fetch to enumerate
+   months, per-month fetch with a revision re-check, header-driven table
+   parsing, guarded and fixture-tested. See the findings section above for the
+   four assumptions this broke.
 4. **NVD version bounds** — keep `version*` in `lib/cpe.js` and emit
    remediation entries from the CPE list.
 5. **The `Fix` column and the detail-panel Remediation section.**

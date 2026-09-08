@@ -181,6 +181,27 @@ BEGIN
     END IF;
 END $$;
 
+-- Which Android Security Bulletins have been ingested.
+--
+-- Needed because the bulletins are a paginated archive of ~91 supported
+-- monthly pages: without this, every fetch cycle would re-download all of
+-- them. `revision` is what makes the re-check cheap and correct -- bulletins
+-- are NOT immutable once published (AOSP links are added within 48 hours, and
+-- the December 2025 bulletin was still being revised in March 2026), so a
+-- stored month is re-parsed when its revision marker changes rather than
+-- being trusted forever.
+CREATE TABLE IF NOT EXISTS android_bulletins (
+    -- The bulletin's own slug, always YYYY-MM-01.
+    slug TEXT PRIMARY KEY,
+    -- The remediation level stated in the page text, always YYYY-MM-05. This
+    -- is deliberately not the slug; see extractPatchLevel in the fetcher.
+    patch_level TEXT,
+    -- 'Updated <date>', or the published date when never revised.
+    revision TEXT,
+    cve_count INTEGER DEFAULT 0,
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Columns added for the fix-action feature. `CREATE TABLE IF NOT EXISTS` is a
 -- no-op against an existing table, so a deployment that already holds data
 -- would never receive these without an explicit ALTER. `ADD COLUMN IF NOT

@@ -1,6 +1,10 @@
 const { fetchCisaKev, fetchCisaKevJson } = require('../fetchers/cisa-fetcher');
 const { fetchNvd } = require('../fetchers/nvd-fetcher');
 const { fetchMitreCvew } = require('../fetchers/mitre-fetcher');
+const {
+    fetchBulletinIndex, fetchAndroidBulletin, supportedMonths,
+    SOURCE_NAME: SOURCE_ANDROID,
+} = require('../fetchers/android-bulletin-fetcher');
 const { sleep } = require('../lib/http');
 const repository = require('./repository');
 const alertEngine = require('./alert-engine');
@@ -25,6 +29,23 @@ const NVD_DELAY_WITH_KEY_MS = 800;
 // MITRE has no documented public rate limit, but the enrichment pass issues
 // one request per CVE and previously fired them back to back. Space them out.
 const MITRE_DELAY_MS = 250;
+
+// Android bulletins are ~300 KB documentation pages on a Google property with
+// no published rate limit. Spacing them out is politeness rather than a
+// requirement.
+const BULLETIN_DELAY_MS = 500;
+
+// Bulletins per cycle. There are ~91 supported months, so a cold start
+// backfills across successive cycles rather than pulling 27 MB in one pass.
+// Never-seen months are taken newest-first, so the most useful data lands on
+// the first cycle and the archive fills in behind it.
+const BULLETIN_MAX_PER_CYCLE = 12;
+
+// How many recent months to re-check every cycle regardless of being stored.
+// Bulletins are revised after publication -- AOSP links are added within 48
+// hours, and later corrections do happen -- so the newest months are the ones
+// worth re-reading. Older months are left alone unless never seen.
+const BULLETIN_RECHECK_MONTHS = 3;
 
 /**
  * Platforms to guarantee coverage for, as CPE match strings.
@@ -105,6 +126,7 @@ async function fetchAllSources() {
         [SOURCE_CISA]: null,
         [SOURCE_NVD]: null,
         [SOURCE_MITRE]: null,
+        [SOURCE_ANDROID]: null,
         alerts: 0,
         error: null,
     };
@@ -115,6 +137,11 @@ async function fetchAllSources() {
         results[SOURCE_CISA] = await runSource(SOURCE_CISA, fetchCisaSource);
         results[SOURCE_NVD] = await runSource(SOURCE_NVD, fetchNvdSource);
         results[SOURCE_MITRE] = await runSource(SOURCE_MITRE, fetchMitreSource);
+        // Runs after NVD so the CVEs it enriches usually already exist. It
+        // works either way -- a bulletin CVE absent from NVD is inserted
+        // rather than skipped -- but ordering it here keeps the merge doing
+        // fills rather than creating half-populated rows.
+        results[SOURCE_ANDROID] = await runSource(SOURCE_ANDROID, fetchAndroidBulletinSource);
 
         // New records can introduce new vendors or technology types, so drop
         // the cached dropdown lists before anything reads them again.
@@ -337,6 +364,105 @@ async function fetchMitreSource() {
     return { fetched: records.length, stored, extra: { enriched: records.length, failures } };
 }
 
+/**
+ * Decide which bulletins to fetch this cycle.
+ *
+ * Two reasons to fetch a month: it has never been ingested, or it is recent
+ * enough that a revision is plausible. Recent months come first because a
+ * revision to last month matters more than backfilling 2019.
+ *
+ * @param {string[]} months  Supported slugs, newest first.
+ * @param {Map<string,string>} stored  slug -> stored revision.
+ */
+function selectBulletinTargets(months, stored) {
+    const recheck = months.slice(0, BULLETIN_RECHECK_MONTHS);
+    const missing = months.filter((slug) => !stored.has(slug));
+
+    const targets = [];
+    for (const slug of [...recheck, ...missing]) {
+        if (!targets.includes(slug)) targets.push(slug);
+        if (targets.length >= BULLETIN_MAX_PER_CYCLE) break;
+    }
+    return targets;
+}
+
+/**
+ * Android Security Bulletins.
+ *
+ * The only source of Android fix versions and monthly security patch levels;
+ * NVD publishes an Android version bound for roughly 1% of Android CVEs.
+ */
+async function fetchAndroidBulletinSource() {
+    const { months } = await fetchBulletinIndex();
+    const supported = supportedMonths(months);
+    const stored = await repository.getStoredBulletins();
+    const targets = selectBulletinTargets(supported, stored);
+
+    console.log(
+        `[Android Bulletin] ${supported.length} supported months, `
+        + `${stored.size} already stored; fetching ${targets.length} this cycle`,
+    );
+
+    let fetched = 0;
+    let storedCount = 0;
+    let unchanged = 0;
+    const failures = [];
+
+    for (const [index, slug] of targets.entries()) {
+        if (index > 0) await sleep(BULLETIN_DELAY_MS);
+
+        try {
+            const bulletin = await fetchAndroidBulletin(slug);
+            fetched += bulletin.total;
+
+            // A month whose revision marker is unchanged holds the same rows
+            // we already stored, so the upsert would be pure write for no
+            // change. The conditional upsert would elide it anyway; skipping
+            // avoids building the statement at all.
+            if (stored.get(slug) === bulletin.revision) {
+                unchanged += 1;
+                continue;
+            }
+
+            storedCount += await repository.storeRecords(bulletin.records, SOURCE_ANDROID);
+            await repository.recordBulletin({
+                slug,
+                patchLevel: bulletin.patchLevel,
+                revision: bulletin.revision,
+                cveCount: bulletin.total,
+            });
+        } catch (err) {
+            // One odd month must not block the rest, but a systemic layout
+            // change must not be absorbed silently either -- see below.
+            console.error(`[Android Bulletin] ${slug} failed:`, err.message);
+            failures.push(slug);
+        }
+    }
+
+    // Every attempted month failing is a layout change, not bad luck. The
+    // parser already refuses to return an empty result for a single page; this
+    // is the same guard at the level of the whole source, so the API reports
+    // an error instead of a quiet success with nothing stored.
+    if (targets.length > 0 && failures.length === targets.length) {
+        throw new Error(
+            `All ${targets.length} Android bulletin fetches failed `
+            + `(${failures.join(', ')}); the bulletin format has probably changed`,
+        );
+    }
+
+    return {
+        fetched,
+        stored: storedCount,
+        extra: {
+            months_fetched: targets.length,
+            months_unchanged: unchanged,
+            months_stored: stored.size,
+            months_supported: supported.length,
+            failures: failures.length,
+        },
+    };
+}
+
 function getFetchStatus() {
     return {
         isFetching,
@@ -345,4 +471,13 @@ function getFetchStatus() {
     };
 }
 
-module.exports = { fetchAllSources, getFetchStatus, publicError, SOURCE_CISA, SOURCE_NVD, SOURCE_MITRE };
+module.exports = {
+    fetchAllSources,
+    getFetchStatus,
+    publicError,
+    selectBulletinTargets,
+    SOURCE_CISA,
+    SOURCE_NVD,
+    SOURCE_MITRE,
+    SOURCE_ANDROID,
+};

@@ -1,0 +1,191 @@
+<!doctype html>
+<html><head><title>Android Security Bulletin-December 2025</title></head>
+<body>
+<!--
+  FIXTURE: a verbatim excerpt of
+  https://source.android.com/docs/security/bulletin/2025-12-01
+  captured 2026-09-08. Markup is unmodified; rows are trimmed and
+  navigation/script chrome removed to keep the file reviewable.
+  Retains one "Updated AOSP versions" table, one "Subcomponent"
+  table, the "Android Launch Version" table and the glossary, so the
+  header-driven table selection is genuinely exercised.
+-->
+<div class="devsite-article-meta">Published December 1, 2025 | Updated March 6, 2026</div>
+<h1>Android Security Bulletin&mdash;December 2025</h1>
+<p>This Android Security Bulletin contains details of security vulnerabilities
+that affect Android devices. Security patch levels of
+2025-12-05 or later address all of these issues.
+To learn how to check a device's security patch level, see
+<a href="https://support.google.com/pixelphone/answer/4457705">Check and update your Android
+version</a>.</p>
+
+<!-- table headers: CVE | References | Type | Severity | Updated AOSP versions -->
+<table>
+  <colgroup>
+  <col width="21%">
+  <col width="21%">
+  <col width="14%">
+  <col width="14%">
+  <col width="30%">
+  </colgroup>
+  <tbody>
+  <tr>
+    <th>CVE</th>
+    <th>References</th>
+    <th>Type</th>
+    <th>Severity</th>
+      <th scope="col">Updated AOSP versions</th>
+  </tr><tr>
+    <td>
+      CVE-2025-22420
+    </td>
+    <td>
+      <a href="https://android.googlesource.com/platform/frameworks/base/+/fb8f76eca9079c34af3e14ee0a58bc10a580ec42" rel="noreferrer">A-337775777</a>
+    </td>
+    <td>EoP</td>
+    <td>High</td>
+    <td>13, 14, 15, 16</td>
+  </tr><tr>
+    <td>
+      CVE-2025-32319
+    </td>
+    <td>
+      <a href="https://android.googlesource.com/platform/frameworks/base/+/70ab82c4546aa893682a4507664dc2c471d6cd95" rel="noreferrer">A-291281543</a>
+    </td>
+    <td>EoP</td>
+    <td>High</td>
+    <td>16</td>
+  </tr><tr>
+    <td>
+      CVE-2025-32328
+    </td>
+    <td>
+      <a href="https://android.googlesource.com/platform/frameworks/base/+/e030442861f4dd0e03d67b65f0940b488007f0d7" rel="noreferrer">A-327137311</a>
+    </td>
+    <td>EoP</td>
+    <td>High</td>
+    <td>13, 14, 15</td>
+  </tr><tr>
+    <td>
+      CVE-2025-32329
+    </td>
+    <td>
+      <a href="https://android.googlesource.com/platform/frameworks/base/+/e030442861f4dd0e03d67b65f0940b488007f0d7" rel="noreferrer">A-326926596</a>
+    </td>
+    <td>EoP</td>
+    <td>High</td>
+    <td>13, 14, 15</td>
+  </tr><tr>
+    <td>
+      CVE-2025-48525
+    </td>
+    <td>
+      <a href="https://android.googlesource.com/platform/frameworks/base/+/31989869759e9b6119dc1cf324c395d789024908" rel="noreferrer">A-391895151</a>
+      [<a href="https://android.googlesource.com/platform/frameworks/base/+/5ec1cdae1805dec292a2de5554896363eaa078eb" rel="noreferrer">2</a>]
+    </td>
+    <td>EoP</td>
+    <td>High</td>
+    <td>13, 14, 15, 16</td>
+  </tr>
+  </tbody>
+</table>
+
+<!-- table headers: CVE | References | Type | Severity | Subcomponent -->
+<table>
+  <colgroup>
+  <col width="21%">
+  <col width="21%">
+  <col width="14%">
+  <col width="14%">
+  <col width="30%">
+  </colgroup>
+  <tbody>
+    <tr>
+    <th>CVE</th>
+    <th>References</th>
+    <th>Type</th>
+    <th>Severity</th>
+    <th scope="col">Subcomponent</th>
+  </tr><tr>
+    <td>CVE-2025-48623</td>
+    <td>A-436580278<br><a href="https://android.googlesource.com/kernel/common/+/3b6fab0ff24f7108c71a4d9c12567455cb2a5a81" rel="noreferrer">Upstream kernel</a>
+      [<a href="https://android.googlesource.com/kernel/common/+/e76cff4952af4ac4652dc74ffbd134ff57c47895" rel="noreferrer">2</a>]</td>
+    <td>EoP</td>
+    <td>Critical</td>
+    <td>pKVM</td>
+  </tr><tr>
+    <td>CVE-2025-48624</td>
+    <td>A-443053939<br><a href="https://android.googlesource.com/kernel/common/+/0668e45a43398a07c3aa2ae08903097657efd87e" rel="noreferrer">Upstream kernel</a></td>
+    <td>EoP</td>
+    <td>Critical</td>
+    <td>IOMMU</td>
+  </tr><tr>
+    <td>CVE-2025-48637</td>
+    <td>A-443763663<br><a href="https://android.googlesource.com/kernel/common/+/4cfc9c2d8815577832cafbfcd7f98025f0da718d" rel="noreferrer">Upstream kernel</a>
+      [<a href="https://android.googlesource.com/kernel/common/+/aff2255dbe38dc7c57bac8d3ba9feed989289b20" rel="noreferrer">2</a>]</td>
+    <td>EoP</td>
+    <td>Critical</td>
+    <td>pKVM</td>
+  </tr>
+  </tbody>
+</table>
+
+<!-- table headers: References | Android Launch Version | Kernel Launch Version | Minimum Update Version -->
+<table>
+  <colgroup>
+  <col width="22%">
+  <col width="26%">
+  <col width="26%">
+  <col width="26%">
+  </colgroup>
+  <tbody>
+    <tr>
+    <th>References</th>
+    <th>Android Launch Version</th>
+    <th>Kernel Launch Version</th>
+    <th>Minimum Update Version</th>
+  </tr>
+    <tr>
+      <td>A-404245371</td>
+      <td>12</td>
+      <td>5.4</td>
+      <td>5.4.292</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- table headers: Abbreviation | Definition -->
+<table>
+<colgroup>
+<col width="25%">
+<col width="75%">
+</colgroup>
+<tbody>
+  <tr>
+  <th>Abbreviation</th>
+  <th>Definition</th>
+</tr>
+<tr>
+  <td>RCE</td>
+  <td>Remote code execution</td>
+</tr>
+<tr>
+  <td>EoP</td>
+  <td>Elevation of privilege</td>
+</tr>
+<tr>
+  <td>ID</td>
+  <td>Information disclosure</td>
+</tr>
+<tr>
+  <td>DoS</td>
+  <td>Denial of service</td>
+</tr>
+<tr>
+  <td>N/A</td>
+  <td>Classification not available</td>
+</tr>
+</tbody>
+</table>
+
+</body></html>

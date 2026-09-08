@@ -1,7 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const repository = require('../models/repository');
-const { fetchAllSources, getFetchStatus, SOURCE_CISA, SOURCE_NVD, SOURCE_MITRE } = require('../models/fetcher-orchestrator');
+const {
+    fetchAllSources, getFetchStatus,
+    SOURCE_CISA, SOURCE_NVD, SOURCE_MITRE, SOURCE_ANDROID,
+} = require('../models/fetcher-orchestrator');
 const { getAlerts, getAlertCount, clearAlerts } = require('../models/alert-engine');
 const { SEVERITY_LEVELS } = require('../lib/severity');
 
@@ -111,7 +114,7 @@ router.get('/filter-options', async (req, res) => {
             // as constants. Vendor and technology genuinely depend on what has
             // been ingested, so those stay data-derived.
             severities: SEVERITY_LEVELS,
-            sources: [SOURCE_CISA, SOURCE_NVD, SOURCE_MITRE],
+            sources: [SOURCE_CISA, SOURCE_NVD, SOURCE_MITRE, SOURCE_ANDROID],
             vendors,
             techTypes,
         });

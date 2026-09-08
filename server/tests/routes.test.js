@@ -5,6 +5,7 @@ jest.mock('../src/models/fetcher-orchestrator', () => ({
     SOURCE_CISA: 'CISA KEV',
     SOURCE_NVD: 'NVD',
     SOURCE_MITRE: 'MITRE CVEW',
+    SOURCE_ANDROID: 'Android Bulletin',
 }));
 jest.mock('../src/models/alert-engine');
 
@@ -182,7 +183,7 @@ describe('GET /api/filter-options', () => {
         const res = await request(makeApp()).get('/api/filter-options');
 
         expect(res.status).toBe(200);
-        expect(res.body.sources).toEqual(['CISA KEV', 'NVD', 'MITRE CVEW']);
+        expect(res.body.sources).toEqual(['CISA KEV', 'NVD', 'MITRE CVEW', 'Android Bulletin']);
     });
 
     test('offers every severity level, not just the ones already ingested', async () => {

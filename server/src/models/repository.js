@@ -443,6 +443,32 @@ class VulnerabilityRepository {
         `, [JSON.stringify([sourceName]), limit]);
         return result.rows.map((r) => r.cve_id);
     }
+
+    /**
+     * Android bulletins already ingested, as { slug: revision }.
+     *
+     * The revision is returned alongside the slug because "have we seen this
+     * month" is not the same question as "is what we stored still current":
+     * bulletins are revised after publication, so a month whose revision
+     * marker has changed must be re-parsed.
+     */
+    async getStoredBulletins() {
+        const result = await getDb().query('SELECT slug, revision FROM android_bulletins');
+        return new Map(result.rows.map((row) => [row.slug, row.revision || '']));
+    }
+
+    /** Record a bulletin as ingested, or update it after a revision. */
+    async recordBulletin({ slug, patchLevel, revision, cveCount }) {
+        await getDb().query(`
+            INSERT INTO android_bulletins (slug, patch_level, revision, cve_count, fetched_at)
+            VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+            ON CONFLICT (slug) DO UPDATE SET
+                patch_level = EXCLUDED.patch_level,
+                revision = EXCLUDED.revision,
+                cve_count = EXCLUDED.cve_count,
+                fetched_at = CURRENT_TIMESTAMP
+        `, [slug, patchLevel || null, revision || null, cveCount || 0]);
+    }
 }
 
 module.exports = new VulnerabilityRepository();
