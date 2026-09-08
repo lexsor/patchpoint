@@ -99,6 +99,42 @@ session use `docker compose exec db psql -U vuln_user -d vuln_dashboard`.
 Note that Docker publishes ports through its own NAT/forward chains, so a host
 firewall that denies inbound traffic does **not** block a published port. That
 is why the bindings above matter rather than relying on the firewall.
+### Performance notes
+
+- **Compression.** nginx gzips static assets and proxied API responses; the
+  server also compresses directly, which covers the API port and the Vite dev
+  proxy. A list page goes from ~38 KB to ~5.6 KB, the JS bundle from ~205 KB to
+  ~69 KB.
+- **Caching.** `/assets/` is content-hashed by Vite, so it is served
+  `immutable, max-age=1y`. `index.html` is `no-cache` — its URL is stable while
+  its contents change, so it must always revalidate.
+- **One scan per page, not two.** The list query carries its own filtered total
+  via `COUNT(*) OVER()`. PostgreSQL keeps no cached row count, so the previous
+  separate `SELECT COUNT(*)` meant every page view scanned twice.
+- **Indexes match the queries.** Composite indexes mirror the emitted
+  `ORDER BY` including NULLS placement; trigram GIN indexes back the
+  leading-wildcard `ILIKE` search that no btree could serve; a
+  `jsonb_path_ops` GIN index backs source filtering.
+- **Ascending sorts still sort.** Only the DESC direction is indexed — a
+  backward scan of a `DESC NULLS LAST` index yields `ASC NULLS FIRST`, so
+  covering both would need two indexes per sortable column, and the write cost
+  on a bulk-upserted table outweighs it.
+- **`pg_trgm` is optional.** Creating the extension needs elevated rights; if
+  the database role cannot, the schema logs a notice and search falls back to
+  sequential scans rather than failing to boot.
+
+### API change
+
+`source_labels` is now `jsonb` rather than a JSON string, so
+`GET /api/vulnerabilities` returns it as a real array:
+
+```diff
+- "source_labels": "[\"CISA KEV\",\"NVD\"]"
++ "source_labels": ["CISA KEV", "NVD"]
+```
+
+The bundled client handles both shapes. Existing databases are migrated in
+place on boot.
 
 ### Theme
 

@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const { initDb, closeDb } = require('./db/client');
 const vulnerabilityRoutes = require('./routes/vulnerabilities');
 const watchlistRoutes = require('./routes/watchlist');
@@ -15,6 +16,13 @@ const HOST = process.env.HOST || '127.0.0.1';
 const POLL_INTERVAL_HOURS = parseFloat(process.env.POLL_INTERVAL_HOURS) || 6;
 
 const app = express();
+
+// Compress JSON responses. nginx also gzips proxied responses in production,
+// but this covers the paths that do not go through it: the API reached
+// directly on its own port, and the Vite dev-server proxy. A list page is
+// ~38 KB uncompressed and ~5.6 KB gzipped.
+// Registered first so it wraps everything below, error responses included.
+app.use(compression());
 
 app.use(securityHeaders);
 app.use(cors(corsOptions()));

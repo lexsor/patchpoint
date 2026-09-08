@@ -27,6 +27,12 @@ function fakeDb(tableRows = []) {
         if (/SELECT COUNT\(\*\)/i.test(sql)) {
             return { rows: [{ count: String(tableRows.length) }] };
         }
+        // The paginated list query: carries the filtered total on each row.
+        if (/COUNT\(\*\) OVER\(\)/i.test(sql)) {
+            return {
+                rows: tableRows.map((r) => ({ ...r, total_count: String(tableRows.length) })),
+            };
+        }
         return { rows: [], rowCount: 0 };
     });
 
@@ -277,5 +283,93 @@ describe('repository.queryVulnerabilities', () => {
         expect(dataQuery.sql).not.toContain('1=1');
         expect(dataQuery.params).toContain("CRITICAL' OR 1=1--");
         expect(dataQuery.params).toContain('%jira%');
+    });
+});
+
+
+describe('query performance shape', () => {
+    test('takes the total from the window function, not a second scan', async () => {
+        // Two queries per page view meant two sequential scans, since
+        // PostgreSQL keeps no cached row count.
+        const db = fakeDb([storedRow(), storedRow({ cve_id: 'CVE-2024-0002' })]);
+
+        const result = await repository.queryVulnerabilities({});
+
+        expect(result.pagination.total).toBe(2);
+        const listQueries = db.statements.filter((s) => /COUNT\(\*\) OVER\(\)/i.test(s.sql));
+        const countQueries = db.statements.filter((s) => /^\s*SELECT COUNT\(\*\)/i.test(s.sql));
+        expect(listQueries).toHaveLength(1);
+        expect(countQueries).toHaveLength(0);
+    });
+
+    test('does not leak total_count into the returned records', async () => {
+        const db = fakeDb([storedRow()]);
+
+        const result = await repository.queryVulnerabilities({});
+
+        expect(result.data[0]).not.toHaveProperty('total_count');
+        expect(result.data[0].cve_id).toBe('CVE-2024-0001');
+        expect(db.statements.length).toBeGreaterThan(0);
+    });
+
+    test('falls back to a count query only when the page is empty', async () => {
+        const db = fakeDb([]); // no rows -> no window to read
+        const result = await repository.queryVulnerabilities({ page: 500 });
+
+        expect(result.pagination.total).toBe(0);
+        expect(db.statements.filter((s) => /^\s*SELECT COUNT\(\*\)/i.test(s.sql))).toHaveLength(1);
+    });
+
+    test('falls back to a count query when the window value is unusable', async () => {
+        // A driver or backend that does not return the window column would
+        // otherwise surface NaN totals and NaN page counts in the UI.
+        const db = fakeDb([storedRow()]);
+        const realQuery = db.client.query.getMockImplementation();
+        db.client.query.mockImplementation(async (sql, params) => {
+            const out = await realQuery(sql, params);
+            if (/COUNT\(\*\) OVER\(\)/i.test(sql)) {
+                return { rows: out.rows.map(({ total_count, ...r }) => r) };
+            }
+            return out;
+        });
+
+        const result = await repository.queryVulnerabilities({});
+
+        expect(result.pagination.total).toBe(1);
+        expect(Number.isFinite(result.pagination.totalPages)).toBe(true);
+    });
+
+    test('filters sources by jsonb containment so the GIN index applies', async () => {
+        const db = fakeDb([storedRow()]);
+
+        await repository.queryVulnerabilities({ source: 'NVD' });
+
+        const q = db.statements.find((s) => /COUNT\(\*\) OVER\(\)/i.test(s.sql));
+        expect(q.sql).toMatch(/source_labels @> \$\d+::jsonb/);
+        expect(q.sql).not.toMatch(/source_labels ILIKE/);
+        expect(q.params).toContain('["NVD"]');
+    });
+
+    test('finds enrichment targets by containment negation', async () => {
+        const db = fakeDb([]);
+
+        await repository.getCveIdsMissingSource('MITRE CVEW', 10);
+
+        const q = db.statements[0];
+        expect(q.sql).toMatch(/NOT \(source_labels @> \$1::jsonb\)/);
+        expect(q.params[0]).toBe('["MITRE CVEW"]');
+    });
+
+    test('binds source_labels as JSON text even when the merge yields an array', async () => {
+        // node-postgres would serialise a JS array as a PostgreSQL array
+        // literal ({a,b}), which jsonb rejects. Rows read back from jsonb come
+        // in as arrays, so both shapes reach the binder.
+        const db = fakeDb([storedRow({ source_labels: ['CISA KEV'] })]);
+
+        await repository.storeRecords([{ cve_id: 'CVE-2024-0001' }], 'NVD');
+
+        const bound = boundValue(db.upserts()[0], 0, 'source_labels');
+        expect(typeof bound).toBe('string');
+        expect(JSON.parse(bound)).toEqual(['CISA KEV', 'NVD']);
     });
 });

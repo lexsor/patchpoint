@@ -22,6 +22,10 @@ const SOURCE_MITRE = 'MITRE CVEW';
 const NVD_DELAY_NO_KEY_MS = 6500;
 const NVD_DELAY_WITH_KEY_MS = 800;
 
+// MITRE has no documented public rate limit, but the enrichment pass issues
+// one request per CVE and previously fired them back to back. Space them out.
+const MITRE_DELAY_MS = 250;
+
 const intFromEnv = (name, fallback) => {
     const parsed = parseInt(process.env[name], 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -256,7 +260,9 @@ async function fetchMitreSource() {
     const records = [];
     let failures = 0;
 
-    for (const cveId of cveIds) {
+    for (const [index, cveId] of cveIds.entries()) {
+        if (index > 0) await sleep(MITRE_DELAY_MS);
+
         try {
             const result = await fetchMitreCvew(cveId);
             records.push(...result.records);

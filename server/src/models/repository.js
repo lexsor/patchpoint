@@ -64,7 +64,9 @@ function toMergeShape(row) {
         cvss_vector: row.cvss_vector || '',
         published_date: row.published_date || null,
         modified_date: row.modified_date || null,
-        source_labels: row.source_labels || '[]',
+        // jsonb is parsed by the driver, so this arrives as a real array.
+        // The merge helpers accept either shape.
+        source_labels: row.source_labels || [],
         vendor: row.vendor || '',
         product: row.product || '',
         tech_type: row.tech_type || '',
@@ -73,6 +75,19 @@ function toMergeShape(row) {
         references: row.reference_urls || '[]',
         cwes: row.cwes || '[]',
     };
+}
+
+/**
+ * Always hand jsonb a JSON string.
+ *
+ * node-postgres serialises a JS array as a PostgreSQL array literal ({a,b}),
+ * which jsonb rejects. The merge produces a JSON string, but a row read back
+ * from jsonb is an array, so both shapes reach here.
+ */
+function toJsonText(value) {
+    if (typeof value === 'string') return value === '' ? '[]' : value;
+    if (Array.isArray(value)) return JSON.stringify(value);
+    return '[]';
 }
 
 /** Merged record -> bind parameters, in UPSERT_COLUMNS order. */
@@ -87,7 +102,7 @@ function toBindParams(cveId, record) {
         record.cvss_vector || '',
         record.published_date || null,
         record.modified_date || null,
-        record.source_labels || '[]',
+        toJsonText(record.source_labels),
         record.vendor || '',
         record.product || '',
         record.tech_type || '',
@@ -185,8 +200,11 @@ class VulnerabilityRepository {
         let paramIndex = 1;
 
         if (source) {
-            whereClauses.push(`source_labels ILIKE $${paramIndex++}`);
-            params.push(`%"${source}"%`);
+            // jsonb containment, which the GIN index on source_labels serves.
+            // This was `source_labels ILIKE '%"NVD"%'` — a leading-wildcard
+            // match on a text column, unindexable by construction.
+            whereClauses.push(`source_labels @> $${paramIndex++}::jsonb`);
+            params.push(JSON.stringify([source]));
         }
         if (severity) {
             whereClauses.push(`severity = $${paramIndex++}`);
@@ -230,19 +248,51 @@ class VulnerabilityRepository {
         const validSortColumns = ['cve_id', 'severity', 'cvss_score', 'published_date', 'modified_date', 'vendor', 'tech_type'];
         const sortCol = validSortColumns.includes(sortBy) ? sortBy : 'published_date';
         const sortOrd = String(sortOrder).toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-
-        const countResult = await db.query(`SELECT COUNT(*) as count FROM vulnerabilities ${whereSql}`, params);
-        const total = parseInt(countResult.rows[0].count, 10);
+        // cve_id is the primary key, so it already orders uniquely; adding it
+        // again as a tiebreak would be a redundant sort key.
+        const orderBy = sortCol === 'cve_id'
+            ? `cve_id ${sortOrd}`
+            : `${sortCol} ${sortOrd} NULLS LAST, cve_id ${sortOrd}`;
 
         const offset = (page - 1) * perPage;
+
+        // `COUNT(*) OVER()` carries the filtered total on every row, computed
+        // after WHERE but before LIMIT. That replaces a separate
+        // `SELECT COUNT(*)`, which meant every page view scanned the table
+        // twice — PostgreSQL keeps no cached row count, so the count scanned
+        // whether or not any filter was applied.
         const dataResult = await db.query(`
-            SELECT ${SELECT_COLUMNS}, created_at, updated_at FROM vulnerabilities ${whereSql}
-            ORDER BY ${sortCol} ${sortOrd} NULLS LAST, cve_id ${sortOrd}
+            SELECT ${SELECT_COLUMNS}, created_at, updated_at,
+                   COUNT(*) OVER() AS total_count
+            FROM vulnerabilities ${whereSql}
+            ORDER BY ${orderBy}
             LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
         `, [...params, perPage, offset]);
 
+        let total = dataResult.rows.length > 0
+            ? parseInt(dataResult.rows[0].total_count, 10)
+            : NaN;
+
+        // Fall back to a plain COUNT when the window column is absent or
+        // unparseable, not only when the page is empty. Missing it would
+        // otherwise surface as NaN totals and NaN page counts in the UI.
+        if (!Number.isFinite(total)) {
+            // No rows means no window to read the count from. Only reachable
+            // when the result set is genuinely empty or the offset is past the
+            // end, so the extra query is off the hot path.
+            const countResult = await db.query(
+                `SELECT COUNT(*) as count FROM vulnerabilities ${whereSql}`,
+                params
+            );
+            total = parseInt(countResult.rows[0].count, 10);
+        }
+
+        // total_count is an implementation detail of the count optimisation,
+        // not part of the record.
+        const data = dataResult.rows.map(({ total_count, ...row }) => row);
+
         return {
-            data: dataResult.rows,
+            data,
             pagination: {
                 page,
                 perPage,
@@ -287,10 +337,10 @@ class VulnerabilityRepository {
     async getCveIdsMissingSource(sourceName, limit = 25) {
         const result = await getDb().query(`
             SELECT cve_id FROM vulnerabilities
-            WHERE source_labels NOT ILIKE $1
+            WHERE NOT (source_labels @> $1::jsonb)
             ORDER BY kev_flag DESC, published_date DESC NULLS LAST
             LIMIT $2
-        `, [`%"${sourceName}"%`, limit]);
+        `, [JSON.stringify([sourceName]), limit]);
         return result.rows.map((r) => r.cve_id);
     }
 }

@@ -5,6 +5,16 @@
 -- `references` is a reserved keyword in PostgreSQL and cannot be used as an
 -- unquoted column name.
 
+-- pg_trgm backs the substring search indexes below. Creating an extension
+-- needs elevated rights, so a deployment whose database role cannot do it
+-- degrades to sequential scans rather than failing to boot.
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+EXCEPTION WHEN insufficient_privilege OR feature_not_supported THEN
+    RAISE NOTICE 'pg_trgm unavailable; substring search will not be index-backed';
+END $$;
+
 CREATE TABLE IF NOT EXISTS vulnerabilities (
     cve_id TEXT PRIMARY KEY,
     title TEXT,
@@ -14,7 +24,10 @@ CREATE TABLE IF NOT EXISTS vulnerabilities (
     cvss_vector TEXT,
     published_date DATE,
     modified_date DATE,
-    source_labels TEXT DEFAULT '[]',
+    -- jsonb, not text. The source filter is a containment test, and jsonb is
+    -- the only form of it an index can serve. `reference_urls` and `cwes` stay
+    -- text because nothing filters on them.
+    source_labels JSONB DEFAULT '[]'::jsonb,
     vendor TEXT,
     product TEXT,
     tech_type TEXT,
@@ -26,13 +39,51 @@ CREATE TABLE IF NOT EXISTS vulnerabilities (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Equality / range filters.
 CREATE INDEX IF NOT EXISTS idx_vuln_severity ON vulnerabilities(severity);
-CREATE INDEX IF NOT EXISTS idx_vuln_published ON vulnerabilities(published_date);
-CREATE INDEX IF NOT EXISTS idx_vuln_vendor ON vulnerabilities(vendor);
 CREATE INDEX IF NOT EXISTS idx_vuln_kev ON vulnerabilities(kev_flag);
 CREATE INDEX IF NOT EXISTS idx_vuln_tech_type ON vulnerabilities(tech_type);
-CREATE INDEX IF NOT EXISTS idx_vuln_cvss ON vulnerabilities(cvss_score);
 CREATE INDEX IF NOT EXISTS idx_vuln_updated ON vulnerabilities(updated_at);
+
+-- Sort support. These match the ORDER BY the list query actually emits,
+-- including the NULLS placement and the cve_id tiebreak — a single-column
+-- index on published_date could not satisfy either, so every page paid for a
+-- sort node.
+--
+-- Only the DESC direction is indexed. A backward scan of a `DESC NULLS LAST`
+-- index yields `ASC NULLS FIRST`, which is not what the ASC query asks for, so
+-- covering both directions would mean two indexes per sortable column. On a
+-- table written in 400-row upserts up to twelve times per fetch cycle that
+-- write cost outweighs the benefit; ascending sorts still sort.
+CREATE INDEX IF NOT EXISTS idx_vuln_published_desc
+    ON vulnerabilities(published_date DESC NULLS LAST, cve_id DESC);
+CREATE INDEX IF NOT EXISTS idx_vuln_cvss_desc
+    ON vulnerabilities(cvss_score DESC NULLS LAST, cve_id DESC);
+
+-- Source filtering: `source_labels @> '["NVD"]'`. jsonb_path_ops is smaller
+-- and faster than the default jsonb_ops when containment is the only operator
+-- used, which it is here.
+CREATE INDEX IF NOT EXISTS idx_vuln_sources
+    ON vulnerabilities USING GIN (source_labels jsonb_path_ops);
+
+-- Substring search. Every text filter in the UI is a leading-wildcard ILIKE,
+-- which no btree index can serve; trigram GIN indexes can. Guarded on the
+-- extension actually being present.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') THEN
+        CREATE INDEX IF NOT EXISTS idx_vuln_vendor_trgm
+            ON vulnerabilities USING GIN (vendor gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_vuln_product_trgm
+            ON vulnerabilities USING GIN (product gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_vuln_cve_id_trgm
+            ON vulnerabilities USING GIN (cve_id gin_trgm_ops);
+        -- The description index is the largest and the costliest to maintain,
+        -- but description is also the field that makes search worth having.
+        CREATE INDEX IF NOT EXISTS idx_vuln_description_trgm
+            ON vulnerabilities USING GIN (description gin_trgm_ops);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS sources (
     id SERIAL PRIMARY KEY,
@@ -79,3 +130,35 @@ BEGIN
         ALTER TABLE alerts ADD CONSTRAINT alerts_match_key UNIQUE (cve_id, match_type, match_value);
     END IF;
 END $$;
+
+-- Migrate an existing text source_labels column to jsonb.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'vulnerabilities'
+          AND column_name = 'source_labels'
+          AND data_type <> 'jsonb'
+    ) THEN
+        -- A single unparseable row would abort the cast, so neutralise those
+        -- first. `IS NOT JSON` requires PostgreSQL 16, which is what the
+        -- compose file pins.
+        UPDATE vulnerabilities SET source_labels = '[]'
+        WHERE source_labels IS NULL OR source_labels IS NOT JSON;
+
+        ALTER TABLE vulnerabilities
+            ALTER COLUMN source_labels TYPE JSONB USING source_labels::jsonb,
+            ALTER COLUMN source_labels SET DEFAULT '[]'::jsonb;
+
+        RAISE NOTICE 'source_labels migrated to jsonb';
+    END IF;
+END $$;
+
+-- Indexes superseded by the composite sort indexes above. Dropping them
+-- removes write cost without losing any access path: a range or equality test
+-- on published_date or cvss_score is served by the leading column of the
+-- corresponding composite.
+DROP INDEX IF EXISTS idx_vuln_published;
+DROP INDEX IF EXISTS idx_vuln_cvss;
+-- Superseded by the trigram index, which serves both `= 'x'` and `ILIKE '%x%'`.
+DROP INDEX IF EXISTS idx_vuln_vendor;

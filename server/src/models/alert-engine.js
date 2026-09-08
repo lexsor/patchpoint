@@ -38,8 +38,13 @@ async function run() {
             const matchType = matchWatchlistItem(vuln, watch);
             if (!matchType) continue;
 
+            // source_labels is jsonb, so the driver hands back an array;
+            // interpolating it directly would render "CISA KEV,NVD".
+            const sources = Array.isArray(vuln.source_labels)
+                ? vuln.source_labels.join(', ')
+                : String(vuln.source_labels || '');
             const message = `Vulnerability ${vuln.cve_id} matches watchlist item "${watch.item}" `
-                + `(${matchType}) from source(s): ${vuln.source_labels}`;
+                + `(${matchType}) from source(s): ${sources}`;
 
             // DO NOTHING means an existing alert for this pair is left alone
             // and RETURNING yields no row, so `created` holds only new alerts.
