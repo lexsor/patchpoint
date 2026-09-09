@@ -1,4 +1,7 @@
-const { describeFromCpe, parseCpe, collectCpeCriteria } = require('../src/lib/cpe');
+const {
+    describeFromCpe, remediationsFromCpe, parseCpe,
+    collectCpeCriteria, collectCpeMatches,
+} = require('../src/lib/cpe');
 const { classifyTechType } = require('../src/lib/tech-type');
 
 /** Build a CVE-shaped object carrying the given CPE criteria strings. */
@@ -7,6 +10,19 @@ function cveWithCpes(criteria) {
         id: 'CVE-2024-0001',
         configurations: [{ nodes: [{ cpeMatch: criteria.map((c) => ({ criteria: c })) }] }],
     };
+}
+
+/**
+ * Build a CVE-shaped object from whole cpeMatch objects, so the version bound
+ * fields NVD publishes alongside `criteria` are present.
+ */
+function cveWithMatches(matches) {
+    return { id: 'CVE-2024-0001', configurations: [{ nodes: [{ cpeMatch: matches }] }] };
+}
+
+/** A cpeMatch for one product, with whichever bounds are given. */
+function match(product, bounds = {}) {
+    return { criteria: `cpe:2.3:a:acme:${product}:*:*:*:*:*:*:*:*`, vulnerable: true, ...bounds };
 }
 
 describe('parseCpe', () => {
@@ -117,6 +133,167 @@ describe('describeFromCpe', () => {
         expect(describeFromCpe(cveWithCpes(['garbage']))).toEqual({
             vendor: '', product: '', tech_type: '', cpe_count: 0,
         });
+    });
+});
+
+describe('collectCpeMatches', () => {
+    test('keeps one product listed twice with different ranges', () => {
+        // The reason this exists rather than reusing collectCpeCriteria: the
+        // criteria string is identical for every branch of a product, so
+        // deduplicating on it would keep the first branch and drop the rest.
+        const matches = collectCpeMatches(cveWithMatches([
+            match('tool', { versionStartIncluding: '7.0', versionEndExcluding: '7.0.73' }),
+            match('tool', { versionStartIncluding: '8.0', versionEndExcluding: '8.0.39' }),
+        ]));
+
+        expect(matches).toHaveLength(2);
+        expect(matches.map((m) => m.versionEndExcluding)).toEqual(['7.0.73', '8.0.39']);
+    });
+
+    test('drops a match repeated with identical bounds', () => {
+        const matches = collectCpeMatches(cveWithMatches([
+            match('tool', { versionEndExcluding: '2.0' }),
+            match('tool', { versionEndExcluding: '2.0' }),
+        ]));
+
+        expect(matches).toHaveLength(1);
+    });
+
+    test('collectCpeCriteria still collapses those to one string', () => {
+        // Attribution counts distinct products, so the bound-aware collection
+        // must not inflate the vendor/product tally or cpe_count.
+        const cve = cveWithMatches([
+            match('tool', { versionEndExcluding: '7.0.73' }),
+            match('tool', { versionEndExcluding: '8.0.39' }),
+        ]);
+
+        expect(collectCpeCriteria(cve)).toHaveLength(1);
+        expect(describeFromCpe(cve).cpe_count).toBe(1);
+    });
+});
+
+describe('remediationsFromCpe', () => {
+    test('reads an exclusive upper bound as the fix version', () => {
+        // "versions below 7.0.73 are vulnerable" means 7.0.73 IS the fix.
+        const [entry] = remediationsFromCpe(cveWithMatches([
+            match('tool', { versionStartIncluding: '7.0', versionEndExcluding: '7.0.73' }),
+        ]), 'NVD');
+
+        expect(entry).toEqual({
+            source: 'NVD',
+            vendor: 'acme',
+            product: 'tool',
+            affected_from: '7.0',
+            affected_to: '7.0.73',
+            bound: 'exclusive',
+            fixed_in: '7.0.73',
+            patch_level: null,
+        });
+    });
+
+    test('an inclusive upper bound names no fix version', () => {
+        // "vulnerable up to and including 1.5" says the fix is later than 1.5
+        // without saying what it is. Putting 1.5 in fixed_in would tell an
+        // admin to install a version that is still vulnerable.
+        const [entry] = remediationsFromCpe(cveWithMatches([
+            match('tool', { versionEndIncluding: '1.5' }),
+        ]), 'NVD');
+
+        expect(entry.bound).toBe('inclusive');
+        expect(entry.fixed_in).toBeNull();
+        expect(entry.affected_to).toBe('1.5');
+    });
+
+    test('prefers the exclusive bound if a match somehow carries both', () => {
+        // Never seen in 2,579 sampled matches, but exclusive is the more
+        // precise statement, so it wins rather than the order of the fields.
+        const [entry] = remediationsFromCpe(cveWithMatches([
+            match('tool', { versionEndExcluding: '2.0', versionEndIncluding: '1.9' }),
+        ]), 'NVD');
+
+        expect(entry.fixed_in).toBe('2.0');
+        expect(entry.bound).toBe('exclusive');
+    });
+
+    test('skips matches with no upper bound at all', () => {
+        // This is the bulk of a long CPE list: an enumeration of every
+        // affected version, carrying no fix information. Emitting entries for
+        // them would fill the detail panel with "no fix published" rows and
+        // inflate the +N count on the Fix column.
+        expect(remediationsFromCpe(cveWithMatches([
+            { criteria: 'cpe:2.3:o:google:android:2.1:*:*:*:*:*:*:*' },
+            { criteria: 'cpe:2.3:o:google:android:2.2:*:*:*:*:*:*:*' },
+            match('tool', { versionStartIncluding: '1.0' }),
+        ]), 'NVD')).toEqual([]);
+    });
+
+    test('keeps every distinct range for one product', () => {
+        // Tomcat's real shape: one fix version per affected branch. Collapsing
+        // these would tell someone on 8.0 to install the 7.0 fix.
+        const entries = remediationsFromCpe(cveWithMatches([
+            match('tool', { versionEndExcluding: '6.0.48' }),
+            match('tool', { versionStartIncluding: '7.0.0', versionEndExcluding: '7.0.73' }),
+            match('tool', { versionStartIncluding: '8.0', versionEndExcluding: '8.0.39' }),
+        ]), 'NVD');
+
+        expect(entries.map((e) => e.fixed_in)).toEqual(['6.0.48', '7.0.73', '8.0.39']);
+    });
+
+    test('deduplicates a range repeated across configurations', () => {
+        const cve = {
+            id: 'CVE-2024-0001',
+            configurations: [
+                { nodes: [{ cpeMatch: [match('tool', { versionEndExcluding: '2.0' })] }] },
+                { nodes: [{ cpeMatch: [match('tool', { versionEndExcluding: '2.0' })] }] },
+            ],
+        };
+
+        expect(remediationsFromCpe(cve, 'NVD')).toHaveLength(1);
+    });
+
+    test('records an exclusive lower bound as the affected start', () => {
+        // Two occurrences in 2,579 measured matches. This overstates the range
+        // by the boundary version itself; dropping the bound would overstate
+        // it by everything below.
+        const [entry] = remediationsFromCpe(cveWithMatches([
+            match('tool', { versionStartExcluding: '1.0', versionEndExcluding: '2.0' }),
+        ]), 'NVD');
+
+        expect(entry.affected_from).toBe('1.0');
+    });
+
+    test('puts the product the row names first', () => {
+        // The Fix column shows the first entry carrying a fix version, and the
+        // Vendor/Product columns show the frequency-primary. If they disagree
+        // the row names one product and shows another product's version, which
+        // is what CVE-2021-44228 does in document order.
+        const cve = cveWithMatches([
+            { criteria: 'cpe:2.3:a:siemens:firmware:*:*:*:*:*:*:*:*', versionEndExcluding: '2.7.0' },
+            { criteria: 'cpe:2.3:a:apache:log4j:*:*:*:*:*:*:*:*', versionEndExcluding: '2.15.0' },
+            { criteria: 'cpe:2.3:a:apache:log4j:2.15.0:*:*:*:*:*:*:*' },
+        ]);
+
+        expect(describeFromCpe(cve).product).toBe('log4j');
+        expect(remediationsFromCpe(cve, 'NVD').map((e) => e.fixed_in)).toEqual(['2.15.0', '2.7.0']);
+    });
+
+    test('stamps the source it is given on every entry', () => {
+        // The merge pairs this against the name storeRecords was called with,
+        // so it must be the caller's constant rather than a literal in here.
+        const entries = remediationsFromCpe(cveWithMatches([
+            match('tool', { versionEndExcluding: '2.0' }),
+            match('other', { versionEndExcluding: '3.0' }),
+        ]), 'NVD');
+
+        expect(entries.map((e) => e.source)).toEqual(['NVD', 'NVD']);
+    });
+
+    test('returns nothing for a CVE with no usable CPE', () => {
+        expect(remediationsFromCpe({}, 'NVD')).toEqual([]);
+        expect(remediationsFromCpe(null, 'NVD')).toEqual([]);
+        expect(remediationsFromCpe(cveWithMatches([
+            { criteria: 'garbage', versionEndExcluding: '2.0' },
+        ]), 'NVD')).toEqual([]);
     });
 });
 

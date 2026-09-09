@@ -97,10 +97,8 @@ const mergeInto = (existing, incoming, sourceName) => {
     const allCwes = new Set([...normalizeList(existing.cwes), ...normalizeList(incoming.cwes)]);
     existing.cwes = JSON.stringify([...allCwes]);
 
-    // Union remediations rather than overwrite them. NVD supplies CPE-derived
-    // fix versions and the Android bulletin supplies patch levels, on separate
-    // fetch cycles; last-writer-wins would make each source erase the other's
-    // remediation on every poll.
+    // Merge remediations rather than overwrite them; see
+    // mergeRemediationLists for what an incoming report is allowed to replace.
     existing.remediations = JSON.stringify(mergeRemediationLists(
         normalizeList(existing.remediations),
         normalizeList(incoming.remediations),
@@ -113,31 +111,75 @@ const mergeInto = (existing, incoming, sourceName) => {
 };
 
 /**
- * Identity of a remediation entry: which source said it, about which product,
- * at which patch level.
+ * What a single remediation report covers: which source said it, about which
+ * product, at which patch level.
  *
- * `patch_level` is part of the key because one CVE is legitimately fixed at
- * several Android patch levels across branches, and those are distinct facts
- * rather than duplicates. `fixed_in` is deliberately NOT part of the key, so
- * a corrected fix version from the same source replaces the stale one instead
- * of accumulating beside it.
+ * This is the unit an incoming report REPLACES, not the unit of identity —
+ * see `remediationKey` for that. A source reports a whole group at once: NVD
+ * publishes every affected range for a product in one CVE response, and an
+ * Android bulletin publishes everything fixed at one patch level. So when a
+ * group reappears, the incoming version of it is complete and the stored one
+ * is superseded — which is what lets a corrected fix version replace the stale
+ * one instead of accumulating beside it.
+ *
+ * `patch_level` is part of the group because one CVE is legitimately fixed at
+ * several Android patch levels across branches, and each arrives on a
+ * different fetch cycle. Grouping without it would make December's bulletin
+ * delete March's.
  */
-const remediationKey = (entry) => JSON.stringify([
+const remediationGroupKey = (entry) => JSON.stringify([
     entry.source || '', entry.vendor || '', entry.product || '', entry.patch_level || '',
 ]);
 
 /**
- * Union two remediation lists, later entries winning on key collision.
+ * Identity of a remediation entry: its group plus the affected range.
+ *
+ * The range has to be part of it. One product commonly carries several
+ * distinct ranges, each with its own fix version — 142 of 418 products
+ * measured across 1,000 CVEs — and keying on the group alone would keep one
+ * of them and drop the rest, telling an admin on Tomcat 8 to install the
+ * Tomcat 7 fix. `fixed_in` is still absent from the key: a revised fix version
+ * for a range that already exists is a correction, and group replacement
+ * handles it.
+ */
+const remediationKey = (entry) => JSON.stringify([
+    entry.source || '', entry.vendor || '', entry.product || '', entry.patch_level || '',
+    entry.affected_from || '', entry.affected_to || '',
+]);
+
+/**
+ * Merge an incoming remediation report into the stored list.
+ *
+ * Stored entries survive unless the incoming list addresses their group, so
+ * sources never erase each other: NVD supplies CPE-derived fix versions and
+ * the Android bulletins supply patch levels, on separate fetch cycles, and a
+ * plain overwrite would make each erase the other's remediation on every poll.
  *
  * Entries are objects, so a Set cannot deduplicate them by value.
+ *
+ * Known limitation: if a source stops publishing a group entirely — an NVD
+ * reanalysis that drops the version bounds it used to publish — the stored
+ * entry stays, because nothing incoming addresses it. Dropping every entry
+ * from the reporting source instead would delete the other months' Android
+ * patch levels, since bulletins report one month per fetch. The stale entry is
+ * the smaller error.
  */
 const mergeRemediationLists = (existingList, incomingList) => {
-    const byKey = new Map();
-    for (const entry of [...existingList, ...incomingList]) {
+    const incoming = new Map();
+    for (const entry of incomingList) {
         if (!entry || typeof entry !== 'object') continue;
-        byKey.set(remediationKey(entry), entry);
+        incoming.set(remediationKey(entry), entry);
     }
-    return [...byKey.values()];
+
+    const addressed = new Set([...incoming.values()].map(remediationGroupKey));
+    const kept = [];
+    for (const entry of existingList) {
+        if (!entry || typeof entry !== 'object') continue;
+        if (addressed.has(remediationGroupKey(entry))) continue;
+        kept.push(entry);
+    }
+
+    return [...kept, ...incoming.values()];
 };
 
 /**
@@ -220,5 +262,5 @@ const normalizeList = (value) => {
 
 module.exports = {
     mergeRecords, classifySeverity, normalizeCveId, normalizeList,
-    mergeRemediationLists, hasActionableFix, remediationKey,
+    mergeRemediationLists, hasActionableFix, remediationKey, remediationGroupKey,
 };

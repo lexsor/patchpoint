@@ -1,17 +1,16 @@
 # Design note: showing what fixes a CVE
 
-Status: **steps 1-3, 5 and 6 implemented. STEP 4 IS OUTSTANDING.**
+Status: **all six steps implemented.**
 
-Step 4 is the NVD version-bound path, and without it the `Fix` column is
-populated for Android CVEs only. NVD publishes an exact `versionEndExcluding`
-for ~57% of CVEs generally, which is the Windows / Linux / networking fleet,
-and none of it currently reaches the `remediations` column: `lib/cpe.js` still
-discards the `version*` fields on each `cpeMatch`. Everything downstream --
-the column, the detail panel, the filter, the merge, the schema -- is built
-and waiting for it.
+Step 4, the NVD version-bound path, closed the gap that left the `Fix` column
+populated for Android CVEs only. Measured through the real fetcher against a
+live 2,000-CVE page (the last 30 days of modifications): 1,004 records get
+`has_fix = TRUE`, 111 carry an upper bound with no named fix version, and 885
+have no fix data at all. That is the Windows / Linux / networking fleet
+arriving in the column for the first time.
 
-Otherwise kept as the record of what was measured, what the first draft got
-wrong, and why the code is shaped the way it is.
+Kept as the record of what was measured, what each draft got wrong, and why
+the code is shaped the way it is.
 
 ## The ask
 
@@ -237,8 +236,9 @@ Note that `describeFromCpe` reaches the CPE list through
 return the whole match object or gain a parallel one; its current signature is
 asserted by tests and must not silently change meaning.
 
-Deduplicate aggressively. A CVE with 163 CPE entries produces many
-near-identical ranges; the panel needs a handful, not 163.
+~~Deduplicate aggressively. A CVE with 163 CPE entries produces many
+near-identical ranges; the panel needs a handful, not 163.~~ **Wrong, and it
+would have destroyed data. Corrected in finding 5 below.**
 
 ### UI
 
@@ -302,6 +302,73 @@ and are kept -- discarding them would throw away more than half of every
 bulletin. They are not attributed to `google:android`, since they are not
 Google's components.
 
+## What the NVD version-bound implementation found
+
+Step 4 broke three of the plan's assumptions and added two facts about
+coverage. Numbering continues from the bulletin findings above.
+
+**5. "Deduplicate aggressively" was wrong, and following it would have
+destroyed data.** The plan assumed a 163-entry CPE list yields many
+near-identical ranges. Measured over 2,579 bounded `cpeMatch` entries,
+deduplicating on (vendor, product, range) kept **99%** of them. The volume in
+a long CPE list is unbounded exact-version enumeration -- `android:2.1`,
+`android:2.2`, one row per release -- which carries no fix information and is
+skipped outright. What survives is not redundant: **142 of 418 products
+sampled carry more than one range**, each with its own fix version, because
+that is how a vendor patches several branches at once. Collapsing them per
+product would have told an admin on Tomcat 8 to install the Tomcat 7 fix. The
+large lists that remain are genuinely large -- CVE-2023-44487 names 163 ranges
+across 87 products, CVE-2023-20579 names 129 AMD CPU firmwares -- and are not
+capped, because a cap hides a real fix for whichever product falls outside it.
+
+**6. The merge key from step 2 would have collapsed those branches anyway.**
+`remediationKey` was `(source, vendor, product, patch_level)`, and every NVD
+entry for one product shares all four. Two-thirds of the fix data would have
+been dropped silently -- in `createMergedRecord` on the first sighting of a
+CVE, before it ever reached the database. The fix separates two ideas that had
+been one:
+
+- **`remediationKey`** -- identity, now including the affected range, so a
+  product's branches are distinct entries.
+- **`remediationGroupKey`** -- the unit an incoming report REPLACES, still
+  `(source, vendor, product, patch_level)`. A source reports a whole group at
+  once, so when a group reappears the stored version of it is superseded. This
+  is what lets an NVD reanalysis both revise one range and withdraw another.
+
+Replacement cannot be scoped to the source alone, which was the first thing
+tried: Android bulletins report **one month per fetch cycle**, so scoping by
+source would make December's bulletin delete March's patch level for the same
+CVE. Scoping by group is what makes both sources behave. The residual
+limitation is recorded in the code: if a source stops publishing a group
+entirely, the stored entry stays, because nothing incoming addresses it.
+
+**7. A lower bound alone is not a remediation.** Roughly 30 of 2,579 bounded
+matches carry only a `versionStart*`. An entry built from one renders as "no
+fix published" while still counting towards the `+N` on the Fix column, so
+matches with no END bound are skipped.
+
+**8. Document order shows the wrong product's fix on 3% of CVEs.** The Fix
+column takes the first entry carrying a fix version, and the Vendor/Product
+columns take the frequency-primary from `describeFromCpe`. On 8 of 263
+measured CVEs those disagree -- CVE-2021-44228's row reads `cisco / webex
+meetings server` while its first bounded match is a Siemens firmware, and
+CVE-2021-1495's reads `cisco / ios xe` while the first fix is a Firepower
+version. Entries for the primary product are therefore sorted to the front,
+stably, so NVD's order survives within each group.
+
+A related case cannot be fixed by ordering: on **148 of 411** CVEs carrying a
+fix version, the row's own product has no published fix while some other
+product on the CVE does. The cell shows that other product's version, and the
+tooltip names the product it belongs to. That is why `summarizeFix` puts the
+product in the tooltip rather than showing a bare number.
+
+**9. Coverage collapses on the old corpus, more sharply than the 23% already
+recorded.** Sampled from the start of the CVE list -- 1999 through the early
+2010s -- **5 of 800** carry an exact fix version, against 115 of 200 in the
+last 30 days of modifications. The `Fix` column will read `—` for most of the
+backfill. That is the honest answer for those rows, and the three-state cell
+from step 5 exists to say so rather than look unloaded.
+
 ## Order of work
 
 Revised from the first draft: the bulletin source moves from last to second,
@@ -319,18 +386,14 @@ motivating request.
    months, per-month fetch with a revision re-check, header-driven table
    parsing, guarded and fixture-tested. See the findings section above for the
    four assumptions this broke.
-4. **NVD version bounds — NOT DONE, the remaining work.** Keep the
-   `version*` fields in `lib/cpe.js` and emit remediation entries from the CPE
-   list. Note that `describeFromCpe` reaches the list through
-   `collectCpeCriteria`, which returns only the `criteria` **string** from each
-   `cpeMatch` and so drops the sibling version fields; that helper must either
-   return the whole match object or gain a parallel one, and its current
-   signature is asserted by `server/tests/cpe.test.js`. Emit one entry per
-   distinct (vendor, product, range), deduplicating hard -- a CVE with 163 CPE
-   entries produces many near-identical ranges and the panel needs a handful.
-   Map `versionEndExcluding` to `fixed_in`, and `versionEndIncluding` to
-   `affected_to` with `bound: 'inclusive'` (the UI already renders that as
-   `> X` and excludes it from `has_fix`).
+4. ~~**NVD version bounds.**~~ **DONE.** `collectCpeMatches` returns whole
+   `cpeMatch` objects alongside the existing `collectCpeCriteria`, which keeps
+   its criteria-string signature and the tests that assert it;
+   `remediationsFromCpe` emits one entry per distinct (vendor, product, range)
+   with `versionEndExcluding` mapped to `fixed_in` and `versionEndIncluding` to
+   `affected_to` with `bound: 'inclusive'`. The plan's "deduplicate hard" and
+   step 2's merge key both turned out to be wrong here -- see findings 5 and 6
+   above.
 5. ~~**The `Fix` column and the detail-panel Remediation section.**~~ **DONE.**
    The column shows three visually and textually distinct states, and
    `summarizeVersions` collapses `13, 14, 15, 16` to `13-16` but deliberately

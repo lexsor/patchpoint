@@ -217,6 +217,66 @@ describe('remediation merging', () => {
             expect(merged).toHaveLength(2);
         });
 
+        test('keeps a products distinct ranges instead of collapsing them', () => {
+            // Measured on 1,000 CVEs, 142 of 418 products carry more than one
+            // range, each with its own fix version. Keying only on
+            // (source, vendor, product) kept one and silently dropped the
+            // rest, which would show an admin on Tomcat 8 the Tomcat 7 fix.
+            const seven = {
+                source: 'NVD', vendor: 'apache', product: 'tomcat',
+                affected_from: '7.0.0', affected_to: '7.0.73', bound: 'exclusive',
+                fixed_in: '7.0.73', patch_level: null,
+            };
+            const eight = {
+                ...seven, affected_from: '8.0', affected_to: '8.0.39', fixed_in: '8.0.39',
+            };
+
+            expect(mergeRemediationLists([], [seven, eight])).toHaveLength(2);
+            // Both survive because they arrive in one report. Arriving in
+            // separate reports is a different case, handled by the test below:
+            // NVD publishes every range for a product at once, so a report
+            // naming only 8.0 means 7.0 is no longer affected.
+            expect(mergeRemediationLists([], [seven, eight]).map((e) => e.fixed_in))
+                .toEqual(['7.0.73', '8.0.39']);
+        });
+
+        test('a fresh report replaces the whole group it addresses', () => {
+            // NVD republishes every range for a product in one response, so a
+            // reanalysis that revises one range and withdraws another is
+            // complete on arrival. Unioning entry by entry would leave the
+            // withdrawn range behind forever.
+            const stored = [
+                {
+                    source: 'NVD', vendor: 'apache', product: 'tomcat',
+                    affected_from: '7.0.0', affected_to: '7.0.73', fixed_in: '7.0.73', patch_level: null,
+                },
+                {
+                    source: 'NVD', vendor: 'apache', product: 'tomcat',
+                    affected_from: '8.0', affected_to: '8.0.39', fixed_in: '8.0.39', patch_level: null,
+                },
+            ];
+            const revised = [{
+                source: 'NVD', vendor: 'apache', product: 'tomcat',
+                affected_from: '7.0.0', affected_to: '7.0.75', fixed_in: '7.0.75', patch_level: null,
+            }];
+
+            expect(mergeRemediationLists(stored, revised)).toEqual(revised);
+        });
+
+        test('a report about one product leaves another products entries alone', () => {
+            const tomcat = {
+                source: 'NVD', vendor: 'apache', product: 'tomcat',
+                affected_to: '7.0.73', fixed_in: '7.0.73', patch_level: null,
+            };
+            const struts = {
+                source: 'NVD', vendor: 'apache', product: 'struts',
+                affected_to: '2.5.13', fixed_in: '2.5.13', patch_level: null,
+            };
+
+            const merged = mergeRemediationLists([tomcat], [struts]);
+            expect(merged.map((e) => e.product).sort()).toEqual(['struts', 'tomcat']);
+        });
+
         test('is order-independent in what it retains', () => {
             const a = mergeRemediationLists([nvdEntry], [bulletinEntry]).length;
             const b = mergeRemediationLists([bulletinEntry], [nvdEntry]).length;
@@ -265,6 +325,33 @@ describe('remediation merging', () => {
 
             const merged = JSON.parse(map.get('CVE-2024-0001').remediations);
             expect(merged).toHaveLength(2);
+        });
+
+        test('a new record keeps every range the source reported', () => {
+            // The createMergedRecord path deduplicates too, so a first sighting
+            // of a multi-branch CVE has to survive it intact. Under the old
+            // key this stored one of the three.
+            const ranges = ['6.0.48', '7.0.73', '8.0.39'].map((fixed) => ({
+                source: 'NVD', vendor: 'apache', product: 'tomcat',
+                affected_from: fixed.slice(0, 3), affected_to: fixed, fixed_in: fixed, patch_level: null,
+            }));
+            const map = new Map();
+            mergeRecords(map, [{ cve_id: 'CVE-2024-0001', remediations: ranges }], 'NVD');
+
+            expect(JSON.parse(map.get('CVE-2024-0001').remediations)).toHaveLength(3);
+        });
+
+        test('a later bulletin month does not delete an earlier patch level', () => {
+            // Bulletins report one month per fetch cycle, so replacement has to
+            // be scoped by patch level. Scoping it to the source alone would
+            // make each month wipe the last.
+            const march = { ...bulletinEntry, patch_level: '2025-03-05', fixed_in: '13, 14, 15' };
+            const map = new Map();
+            mergeRecords(map, [{ cve_id: 'CVE-2024-0001', remediations: [march] }], 'Android Bulletin');
+            mergeRecords(map, [{ cve_id: 'CVE-2024-0001', remediations: [bulletinEntry] }], 'Android Bulletin');
+
+            const merged = JSON.parse(map.get('CVE-2024-0001').remediations);
+            expect(merged.map((e) => e.patch_level).sort()).toEqual(['2025-03-05', '2025-12-01']);
         });
 
         test('a source that supplies no remediations does not wipe them', () => {

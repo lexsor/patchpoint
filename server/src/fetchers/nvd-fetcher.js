@@ -1,6 +1,13 @@
 const { httpGetText, sleep } = require('../lib/http');
 const { classifySeverity } = require('../lib/severity');
-const { describeFromCpe } = require('../lib/cpe');
+const { describeFromCpe, remediationsFromCpe } = require('../lib/cpe');
+
+// Owned here rather than in the orchestrator, as the Android fetcher owns
+// its own: the remediation entries this fetcher emits carry the source name
+// inside them, and the merge in deduplication.js pairs those against the name
+// `storeRecords` was called with. Two independent literals could drift apart
+// and silently break that pairing.
+const SOURCE_NAME = 'NVD';
 
 const NVD_API_URL = 'https://services.nvd.nist.gov/rest/json/cves/2.0';
 const RESULTS_PER_PAGE = 2000; // Max allowed by NVD
@@ -118,6 +125,9 @@ function parseNvdPage(body, startIndex) {
             tech_type: cpe.tech_type,
             references: (cve.references || []).map((r) => r.url).filter(Boolean),
             cwes: extractCwes(cve),
+            // NVD publishes no "fixed in" field either; the version bounds on
+            // the same CPE list are the only fix data it has.
+            remediations: remediationsFromCpe(cve, SOURCE_NAME),
         });
     }
 
@@ -204,4 +214,7 @@ function extractCwes(cve) {
     return [...found];
 }
 
-module.exports = { fetchNvd, extractCvss, extractCwes, extractDescription, RESULTS_PER_PAGE };
+module.exports = {
+    fetchNvd, extractCvss, extractCwes, extractDescription,
+    RESULTS_PER_PAGE, SOURCE_NAME,
+};

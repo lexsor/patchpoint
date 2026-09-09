@@ -1,5 +1,5 @@
 const { fetchCisaKev, fetchCisaKevJson } = require('../fetchers/cisa-fetcher');
-const { fetchNvd } = require('../fetchers/nvd-fetcher');
+const { fetchNvd, SOURCE_NAME: SOURCE_NVD } = require('../fetchers/nvd-fetcher');
 const { fetchMitreCvew } = require('../fetchers/mitre-fetcher');
 const {
     fetchBulletinIndex, fetchAndroidBulletin, supportedMonths,
@@ -18,7 +18,6 @@ const alertEngine = require('./alert-engine');
  */
 
 const SOURCE_CISA = 'CISA KEV';
-const SOURCE_NVD = 'NVD';
 const SOURCE_MITRE = 'MITRE CVEW';
 
 // NVD publishes 5 requests / 30s without an API key and 50 / 30s with one.
